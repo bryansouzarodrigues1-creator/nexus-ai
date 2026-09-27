@@ -535,7 +535,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v1.0</span></div>
+        <div><strong>NEXUS AI</strong><span>v1.1</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -546,7 +546,7 @@ function App(){
       </div>
       <div className="sidefoot">
         <button><Settings size={16}/> Configurações</button>
-        <div className="status"><i className={status?.providers?.chat?'ok':''}/>{status?.providers?.chat?'IA na nuvem conectada':'Nenhum provedor conectado'}</div>
+        <div className="status"><i className={status?.providers?.chat?'ok':''}/>{status?.providers?.chat?(status?.behaviorMode==='open-contextual'?'IA na nuvem · modo aberto':'IA na nuvem conectada'):'Nenhum provedor conectado'}</div>
       </div>
     </aside>
 
