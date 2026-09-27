@@ -1,7 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -705,6 +705,7 @@ async function handleChat(request, env) {
     "Não invente fatos, fontes, memórias ou ações.",
     "Quando usar pesquisa web, diferencie claramente informação encontrada de inferência.",
     "Se houver incerteza relevante, diga qual é a incerteza.",
+    "Nunca invente, exponha ou imprima chamadas de ferramentas inexistentes, pseudo-JSON de actions, nomes como dalle.text2im, tool_call, function_call ou qualquer mecanismo interno fictício. Pedidos de imagem e vídeo são roteados pela própria aplicação; no chat, responda apenas em linguagem natural.",
     NEXUS_OPEN_BEHAVIOR,
   ].join(" ");
 
