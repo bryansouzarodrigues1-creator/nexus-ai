@@ -650,6 +650,7 @@ async function handleChat(request, env) {
   const mode = body.mode === "search" ? "search" : "chat";
   const history = cleanHistory(body.history);
   const attachment = body.attachment || null;
+  const memorySummary = String(body.memorySummary || "").trim().slice(0, 16000);
   const sessionId = String(body.sessionId || "").slice(0, 128);
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
@@ -672,6 +673,7 @@ async function handleChat(request, env) {
   ].join(" ");
 
   let userText = message;
+  let documentContext = "";
   let fallbackSearch = { results: [], unavailable: true };
 
   if (attachment?.kind === "text" && typeof attachment.text === "string") {
@@ -686,6 +688,7 @@ async function handleChat(request, env) {
   if (attachment?.kind === "document" && typeof attachment.dataUrl === "string") {
     try {
       const markdown = await convertDocumentAttachment(attachment, env);
+      documentContext = markdown.slice(0, 80000);
       userText +=
         "\n\nDOCUMENTO CONVERTIDO: " +
         String(attachment.name || "documento") +
@@ -703,8 +706,18 @@ async function handleChat(request, env) {
     }
   }
 
+  const memoryMessages = memorySummary
+    ? [{
+        role: "system",
+        content:
+          "MEMÓRIA COMPACTADA DA CONVERSA. Use apenas como contexto; se conflitar com mensagens recentes, as mensagens recentes vencem:\n" +
+          memorySummary,
+      }]
+    : [];
+
   const buildMessages = (text) => [
     { role: "system", content: system },
+    ...memoryMessages,
     ...history,
     { role: "user", content: text },
   ];
@@ -718,6 +731,7 @@ async function handleChat(request, env) {
   ) {
     const visionMessages = [
       { role: "system", content: system },
+      ...memoryMessages,
       ...history,
       {
         role: "user",
@@ -839,6 +853,65 @@ async function handleChat(request, env) {
     routeReason: route.reason,
     sources: nativeSources.length ? nativeSources : fallbackSources,
     usage: data?.usage || null,
+    documentContext: documentContext || null,
+  });
+}
+
+async function handleMemory(request, env) {
+  const body = await request.json();
+  const previousSummary = String(body.previousSummary || "").trim().slice(0, 16000);
+  const sessionId = String(body.sessionId || "").slice(0, 128);
+  const messages = cleanHistory(body.messages);
+
+  if (!messages.length) {
+    return json({ summary: previousSummary });
+  }
+
+  const system = [
+    "Você compacta memória de uma conversa para uso futuro por outro modelo.",
+    "Preserve somente informações explicitamente presentes: fatos úteis, preferências, decisões, requisitos, nomes de projetos, estados técnicos, erros já diagnosticados, tarefas concluídas e pendências.",
+    "Preserve detalhes técnicos exatos quando forem importantes, como nomes de modelos, versões, endpoints, arquivos e decisões de arquitetura.",
+    "Não invente, não interprete intenções ocultas e não inclua conversa casual sem utilidade futura.",
+    "Se algo novo contradizer a memória antiga, mantenha a informação mais recente.",
+    "Escreva em português, de forma densa e objetiva, com no máximo 900 palavras.",
+  ].join(" ");
+
+  const content = [
+    previousSummary ? "MEMÓRIA ANTERIOR:\n" + previousSummary : "",
+    "NOVO TRECHO DA CONVERSA:\n" +
+      messages.map((m) => m.role.toUpperCase() + ": " + m.content).join("\n\n"),
+  ].filter(Boolean).join("\n\n");
+
+  const attempt = await runTextChat(
+    [
+      { role: "system", content: system },
+      { role: "user", content },
+    ],
+    env,
+    {
+      cloudflareModel: CF_CODE_MODEL,
+      maxTokens: 1200,
+      temperature: 0.15,
+      topP: 0.8,
+      sessionId: sessionId ? sessionId + "-memory" : "",
+      cloudflareOnly: Boolean(env.AI),
+    }
+  );
+
+  if (!attempt?.ok) {
+    return json({
+      summary: previousSummary,
+      updated: false,
+      error: parseProviderError(attempt?.raw || ""),
+    });
+  }
+
+  const summary = extractModelText(attempt.raw) || previousSummary;
+  return json({
+    summary: summary.slice(0, 16000),
+    updated: Boolean(summary),
+    model: attempt.model,
+    provider: attempt.provider,
   });
 }
 
@@ -1082,6 +1155,9 @@ export default {
 
       if (url.pathname === "/api/chat" && request.method === "POST")
         return handleChat(request, env);
+
+      if (url.pathname === "/api/memory" && request.method === "POST")
+        return handleMemory(request, env);
 
       if (url.pathname === "/api/image" && request.method === "POST")
         return handleImage(request, env);
