@@ -1,5 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X} from 'lucide-react';
 import './styles.css';
 
@@ -493,7 +495,9 @@ function App(){
             {thread.messages.map((m,i)=><div className={'msg '+m.role} key={m.id||i}>
               <div className="avatar">{m.role==='user'?'V':'N'}</div>
               <div>
-                <div>{m.content}</div>
+                {m.role==='assistant'
+                  ?<div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content||''}</ReactMarkdown></div>
+                  :<div className="plain-content">{m.content}</div>}
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
