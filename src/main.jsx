@@ -87,6 +87,14 @@ function wantsFreshImage(text){
   return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|reinicie|recomece)\b/i.test(text);
 }
 
+function wantsHighImageQuality(text){
+  return /\b(máxima qualidade|maxima qualidade|ultra.?real|ultrareal|foto.?real|fotorreal|photoreal|high.?fidelity|cinemat|8k|4k|extremamente detalhad|qualidade máxima|qualidade maxima)\b/i.test(text);
+}
+
+function isRichDocument(file){
+  return /\.(pdf|docx|xlsx|xlsm|xlsb|xls|ods|odt|numbers)$/i.test(file?.name||'');
+}
+
 function App(){
   const initialThreads=useMemo(()=>readThreads(),[]);
   const [threads,setThreads]=useState(initialThreads);
@@ -176,18 +184,27 @@ function App(){
 
     const maxImage=5*1024*1024;
     const maxText=2*1024*1024;
+    const maxDocument=4*1024*1024;
 
     try{
       if(file.type.startsWith('image/')){
         if(file.size>maxImage){window.alert('Use uma imagem de até 5 MB.');return}
         const dataUrl=await fileToDataUrl(file);
-        setAttachment({kind:'image',name:file.name,dataUrl,file});
+        setAttachment({kind:'image',name:file.name,dataUrl,file,mime:file.type});
+        return;
+      }
+
+      if(isRichDocument(file)){
+        if(file.size>maxDocument){window.alert('Use um documento de até 4 MB.');return}
+        const dataUrl=await fileToDataUrl(file);
+        setAttachment({kind:'document',name:file.name,dataUrl,file,mime:file.type});
+        setMode('chat');
         return;
       }
 
       if(file.size>maxText){window.alert('Use um arquivo de texto de até 2 MB.');return}
       const text=await fileToText(file);
-      setAttachment({kind:'text',name:file.name,text:text.slice(0,60000),file});
+      setAttachment({kind:'text',name:file.name,text:text.slice(0,100000),file,mime:file.type});
       setMode('chat');
     }catch{
       window.alert('Não consegui ler esse arquivo.');
@@ -273,7 +290,9 @@ function App(){
             prompt:effectiveText,
             sourceImage,
             previousPrompt,
-            history:creativeHistory
+            history:creativeHistory,
+            sessionId:tid,
+            quality:wantsHighImageQuality(effectiveText)?'quality':'fast'
           })
         });
 
@@ -329,7 +348,8 @@ function App(){
             prompt:effectiveText,
             sourceImage,
             previousPrompt,
-            history:creativeHistory
+            history:creativeHistory,
+            sessionId:tid
           })
         });
 
@@ -363,22 +383,24 @@ function App(){
       }else{
         const history=(currentThread?.messages||[])
           .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
-          .slice(-32)
+          .slice(-60)
           .map(m=>({
             role:m.role,
             content:m.content+(m.attachmentText?'\n\nConteúdo do arquivo '+(m.fileName||'anexado')+':\n'+m.attachmentText:'')
           }));
 
         const payloadAttachment=activeAttachment?.kind==='image'
-          ?{kind:'image',name:activeAttachment.name,dataUrl:activeAttachment.dataUrl}
-          :activeAttachment?.kind==='text'
-            ?{kind:'text',name:activeAttachment.name,text:activeAttachment.text}
-            :null;
+          ?{kind:'image',name:activeAttachment.name,dataUrl:activeAttachment.dataUrl,mime:activeAttachment.mime}
+          :activeAttachment?.kind==='document'
+            ?{kind:'document',name:activeAttachment.name,dataUrl:activeAttachment.dataUrl,mime:activeAttachment.mime}
+            :activeAttachment?.kind==='text'
+              ?{kind:'text',name:activeAttachment.name,text:activeAttachment.text,mime:activeAttachment.mime}
+              :null;
 
         const res=await fetch('/api/chat',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({message:effectiveText,mode,history,attachment:payloadAttachment})
+          body:JSON.stringify({message:effectiveText,mode,history,attachment:payloadAttachment,sessionId:tid})
         });
 
         const data=await res.json();
@@ -387,7 +409,9 @@ function App(){
           content:data.answer||data.error||'O motor ainda não está configurado.',
           sources:data.sources||[],
           model:data.model||'',
-          provider:data.provider||''
+          provider:data.provider||'',
+          route:data.route||'',
+          routeReason:data.routeReason||''
         });
       }
     }catch(e){
@@ -421,14 +445,14 @@ function App(){
       ref={fileRef}
       className="hidden-file"
       type="file"
-      accept="image/*,.txt,.md,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.py,.xml,.yaml,.yml,.log"
+      accept="image/*,.pdf,.docx,.xlsx,.xlsm,.xlsb,.xls,.ods,.odt,.numbers,.txt,.md,.json,.csv,.js,.jsx,.ts,.tsx,.html,.htm,.css,.py,.xml,.yaml,.yml,.log"
       onChange={onFileSelected}
     />
 
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v0.9</span></div>
+        <div><strong>NEXUS AI</strong><span>v1.0</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -460,7 +484,7 @@ function App(){
           ?<div className="hero">
             <div className="hero-orb"><Sparkles/></div>
             <h1>O que vamos descobrir?</h1>
-            <p>Chat, visão, arquivos, imagem e vídeo em uma única interface.</p>
+            <p>Chat inteligente, pesquisa web, visão, documentos, imagem e vídeo em uma única interface.</p>
             <div className="actions">
               {starterActions.map(({icon:Icon,label,mode:m})=><button key={label} onClick={()=>chooseTool(m)}><Icon size={18}/>{label}</button>)}
             </div>
@@ -473,7 +497,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.provider?m.provider+' · ':''}{m.model}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
