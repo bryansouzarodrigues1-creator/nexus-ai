@@ -226,6 +226,11 @@ function App(){
     setBusy(true);
 
     try{
+      const creativeHistory=(currentThread?.messages||[])
+        .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
+        .slice(-16)
+        .map(m=>({role:m.role,content:m.content}));
+
       if(mode==='image'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const continuePrevious=Boolean(previousImage&&!wantsFreshImage(effectiveText));
@@ -242,7 +247,12 @@ function App(){
         const res=await fetch('/api/image',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({prompt:effectiveText,sourceImage,previousPrompt})
+          body:JSON.stringify({
+            prompt:effectiveText,
+            sourceImage,
+            previousPrompt,
+            history:creativeHistory
+          })
         });
 
         const type=res.headers.get('content-type')||'';
@@ -255,6 +265,8 @@ function App(){
         const media=await storeGeneratedMedia(blob,'image');
         const imageMode=res.headers.get('x-nexus-image-mode')||'new';
         const model=res.headers.get('x-nexus-model')||'';
+        const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
+        const promptModel=res.headers.get('x-nexus-prompt-model')||'';
 
         const content=imageMode==='edit'
           ?'Imagem editada mantendo a referência.'
@@ -262,17 +274,36 @@ function App(){
             ?'Imagem gerada mantendo o contexto visual possível.'
             :'Imagem gerada.';
 
-        addMessage(tid,{role:'assistant',content,media,model,generationMode:imageMode});
+        addMessage(tid,{
+          role:'assistant',
+          content,
+          media,
+          model,
+          promptExpanded,
+          promptModel,
+          generationMode:imageMode
+        });
       }else if(mode==='video'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const sourceImage=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :previousImage?await mediaAsDataUrl(previousImage):null;
 
+        const previousPrompt=(currentThread?.messages||[])
+          .filter(m=>m.role==='user'&&(m.mode==='image'||m.mode==='video'))
+          .slice(-8)
+          .map(m=>m.content)
+          .join(' -> ');
+
         const res=await fetch('/api/video',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({prompt:effectiveText,sourceImage})
+          body:JSON.stringify({
+            prompt:effectiveText,
+            sourceImage,
+            previousPrompt,
+            history:creativeHistory
+          })
         });
 
         const type=res.headers.get('content-type')||'';
@@ -285,12 +316,16 @@ function App(){
         const media=await storeGeneratedMedia(blob,'video');
         const videoMode=res.headers.get('x-nexus-video-mode')||'text-to-video';
         const model=res.headers.get('x-nexus-model')||'';
+        const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
+        const promptModel=res.headers.get('x-nexus-prompt-model')||'';
 
         addMessage(tid,{
           role:'assistant',
           content:videoMode==='image-to-video'?'Vídeo criado a partir da imagem de referência.':'Vídeo gerado.',
           media,
           model,
+          promptExpanded,
+          promptModel,
           generationMode:videoMode
         });
       }else{
@@ -360,7 +395,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v0.7</span></div>
+        <div><strong>NEXUS AI</strong><span>v0.8</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -405,7 +440,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.model}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.model}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
