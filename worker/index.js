@@ -749,7 +749,62 @@ async function handleChat(request, env) {
       temperature: 0.45,
       topP: 0.9,
       sessionId,
+      cloudflareOnly: Boolean(env.AI),
     });
+
+    if (!attempt?.ok && env.AI) {
+      try {
+        const imageBlob = dataUrlToBlob(attachment.dataUrl);
+        const converted = await env.AI.toMarkdown(
+          {
+            name: String(attachment.name || "imagem.jpg"),
+            blob: imageBlob,
+          },
+          {
+            conversionOptions: {
+              output: { format: "markdown" },
+              image: { descriptionLanguage: "pt" },
+            },
+          }
+        );
+
+        const item = Array.isArray(converted) ? converted[0] : converted;
+        const visualDescription =
+          item && item.format !== "error" ? String(item.data || "") : "";
+
+        if (visualDescription) {
+          attempt = await runTextChat(
+            buildMessages(
+              userText +
+              "\n\nDESCRIÇÃO VISUAL EXTRAÍDA DA IMAGEM ANEXADA:\n" +
+              visualDescription.slice(0, 30000)
+            ),
+            env,
+            {
+              cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
+              maxTokens: 2400,
+              temperature: 0.45,
+              topP: 0.9,
+              sessionId,
+              cloudflareOnly: true,
+            }
+          );
+        }
+      } catch {}
+    }
+
+    if (!attempt?.ok && env.HF_TOKEN) {
+      attempt = await runHfChat(
+        env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
+        visionMessages,
+        env,
+        {
+          maxTokens: 2400,
+          temperature: 0.45,
+          topP: 0.9,
+        }
+      );
+    }
   } else if (mode === "search" && env.AI) {
     attempt = await runTextChat(buildMessages(userText), env, {
       cloudflareModel: route.model,
