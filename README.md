@@ -1,27 +1,41 @@
-# NEXUS AI v0.1
+# NEXUS AI v0.2
 
-MVP web preparado para chat, pesquisa, arquivos, imagem e vídeo com arquitetura de provedores plugáveis.
+Assistente multimodal web com frontend React/Vite e backend serverless em Cloudflare Pages Functions.
 
-## Rodar localmente (opcional)
+## Recursos
+- Chat com modelo open-weight via Hugging Face Inference Providers
+- Pesquisa web via SearXNG configurável
+- Geração de imagem via Hugging Face Inference Providers
+- Geração de vídeo via Hugging Face Inference Providers
+- Histórico local no navegador
+- Status dos provedores em `/api/status`
+- Segredos apenas no servidor
+
+## Deploy no Cloudflare Pages
+Conecte este repositório ao Cloudflare Pages.
+
+- Production branch: `main`
+- Build command: `npm run build`
+- Build output directory: `dist`
+
+Depois, em **Settings → Variables and Secrets**, configure:
+
+### Obrigatório
+- `HF_TOKEN` como **Secret**
+
+### Opcionais
+- `HF_CHAT_MODEL` — padrão: `openai/gpt-oss-20b:fastest`
+- `HF_IMAGE_MODEL` — padrão: `black-forest-labs/FLUX.1-schnell`
+- `HF_VIDEO_MODEL` — padrão: `Wan-AI/Wan2.1-T2V-1.3B`
+- `SEARXNG_URL` — URL de uma instância SearXNG com saída JSON habilitada
+
+## Segurança
+Nunca coloque `HF_TOKEN` no frontend, commit, README ou variável pública. Use Secret no Cloudflare.
+
+## Desenvolvimento local
 ```bash
 npm install
 npm run dev
 ```
 
-## Deploy grátis
-- Frontend: Cloudflare Pages ou GitHub Pages.
-- API: Cloudflare Worker usando `worker/index.js`.
-- Segredo opcional: `HF_TOKEN`.
-- Modelo configurável: `HF_MODEL`.
-
-## Estado atual
-- Interface responsiva: pronta.
-- Histórico local: pronto.
-- Modos Chat/Pesquisa: prontos na UI.
-- Endpoint server-side: pronto.
-- Adapter Hugging Face: preparado.
-- Pesquisa web real: próximo adapter.
-- Upload/visão: próximo adapter.
-- Imagem/vídeo: estrutura/UI preparada; motores ainda não conectados.
-
-Nunca coloque tokens no código do frontend.
+As funções em `functions/api/*` são executadas pelo Cloudflare Pages quando o projeto estiver implantado.
