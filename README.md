@@ -1,125 +1,106 @@
-# NEXUS AI v0.8
+# NEXUS AI v0.9
 
-NEXUS AI é um assistente multimodal web com frontend React/Vite e um único Cloudflare Worker como backend/orquestrador.
+NEXUS AI é um assistente multimodal web com React/Vite e um único Cloudflare Worker.
 
-## Arquitetura
+## Arquitetura atual
 
 ```text
 React / Vite
     ↓
 Cloudflare Worker
-    ├── /api/chat
-    ├── /api/status
-    ├── /api/image
-    ├── /api/video
-    └── assets do dist/
-          ↓
-Hugging Face Inference Providers
+    ├── Workers AI — motor principal
+    │   ├── chat: Nemotron 3 Super 120B
+    │   ├── prompt expansion: Gemma 4 26B A4B
+    │   └── imagem/edição: FLUX.2 Klein 4B
+    │
+    └── Hugging Face Inference Providers — fallback
+        ├── GPT-OSS
+        ├── FLUX
+        └── vídeo
 ```
 
-A inferência pesada acontece nos provedores de nuvem. O dispositivo do usuário apenas executa o navegador, envia dados e exibe os resultados.
+O processamento pesado continua integralmente na nuvem.
 
-## Recursos atuais
+## Por que dois provedores
 
-- Chat com histórico contextual e fallback automático
-- Modelo principal `openai/gpt-oss-120b:cheapest`
-- Fallback do chat para `openai/gpt-oss-20b:fastest`
-- Expansão inteligente de prompts para imagem e vídeo
-- O 120B atua como diretor criativo antes do modelo visual
-- Expansão preserva intenção, estilo, objetos, cores e restrições do usuário
-- Análise de imagens por modelo de visão com fallback de caption
-- Análise de arquivos de texto e código
-- Geração de imagens
-- Edição/continuidade visual usando a imagem anterior como referência
-- Persistência local de mídia em IndexedDB
-- Imagem → vídeo quando suportado pelo provedor/modelo
-- Texto → vídeo como fallback
-- Pesquisa web preparada via SearXNG
-- Tratamento robusto de erros HTML, respostas inválidas, timeout, cota e rate limit
-- Status e modelos ativos em `/api/status`
-- Segredos somente no servidor
+A cota gratuita do Hugging Face Inference Providers é pequena. A NEXUS agora usa a franquia diária do Cloudflare Workers AI para chat, expansão de prompt e imagem, mantendo o Hugging Face como fallback.
+
+Isso evita que a aplicação inteira pare quando os créditos mensais do Hugging Face acabarem.
+
+## Recursos
+
+- Chat contextual com histórico
+- Cloudflare Nemotron 120B como chat principal
+- Cloudflare Gemma 4 como motor rápido e diretor criativo
+- Hugging Face GPT-OSS como fallback
+- Expansão automática de prompts multimídia
+- Geração de imagens pelo FLUX.2 Klein 4B
+- Edição real da imagem anterior por referência
+- Redimensionamento apenas da cópia de referência enviada ao modelo
+- Imagem original preservada no navegador
+- Persistência de mídia em IndexedDB
+- Análise de imagem e arquivos
+- Vídeo via Hugging Face enquanto houver cota/créditos
+- Erros de quota, HTML inválido, timeout e rate limit tratados sem derrubar o Worker
+- Provedor e modelo usados aparecem na interface
+
+## Workers AI binding
+
+O `wrangler.jsonc` inclui:
+
+```json
+"ai": {
+  "binding": "AI"
+}
+```
+
+O Worker acessa o serviço como `env.AI`.
 
 ## Modelos padrão
 
+### Cloudflare
+- Chat: `@cf/nvidia/nemotron-3-120b-a12b`
+- Prompt/fast fallback: `@cf/google/gemma-4-26b-a4b-it`
+- Imagem/edição: `@cf/black-forest-labs/flux-2-klein-4b`
+
+### Hugging Face fallback
 - Chat: `openai/gpt-oss-120b:cheapest`
-- Prompt expander: usa `HF_PROMPT_MODEL`, depois `HF_CHAT_MODEL`, depois o 120B
 - Chat fallback: `openai/gpt-oss-20b:fastest`
-- Visão: `Qwen/Qwen2.5-VL-3B-Instruct`
-- Caption fallback: `Salesforce/blip-image-captioning-large`
 - Imagem: `black-forest-labs/FLUX.1-schnell`
-- Edição de imagem: `black-forest-labs/FLUX.1-Kontext-dev`
+- Edição: `black-forest-labs/FLUX.1-Kontext-dev`
 - Vídeo: `Wan-AI/Wan2.1-T2V-1.3B`
 - Imagem → vídeo: `Lightricks/LTX-Video`
 
-A disponibilidade e os limites dependem dos Inference Providers associados à conta/token.
+## Vídeo
 
-## Prompt expansion
+Vídeo continua sendo a parte mais cara da arquitetura. A v0.9 não ativa silenciosamente modelos pagos de terceiros no Cloudflare. Se a cota do Hugging Face acabar, a interface informa isso claramente em vez de gerar uma cobrança sem autorização.
 
-Antes de gerar imagem ou vídeo, o Worker chama um modelo de texto para transformar pedidos simples em prompts visuais de maior fidelidade.
+## Configuração
 
-Exemplo conceitual:
+### Secret existente
+- `HF_TOKEN` — usado apenas para os fallbacks do Hugging Face e vídeo
 
-```text
-"um cavalo correndo na chuva"
-        ↓
-NEXUS Prompt Director
-        ↓
-descrição visual detalhada e coerente
-        ↓
-FLUX / Wan / LTX
-```
-
-Se a expansão falhar por indisponibilidade ou cota, o prompt original é usado automaticamente. A geração não depende da expansão para continuar funcionando.
-
-Quando existe uma imagem de referência, o expansor recebe instruções para preservar identidade visual e modificar somente o que o usuário pediu.
-
-## Cloudflare
-
-O projeto usa `wrangler.jsonc`:
-
-- Worker: `worker/index.js`
-- Static assets: `dist`
-- Node compatibility habilitada
-
-Build/deploy:
-
-```bash
-npm install
-npm run check
-npm run build
-npx wrangler deploy
-```
-
-## Variáveis e segredos
-
-### Obrigatório
-
-- `HF_TOKEN` — Secret do Cloudflare Worker
-
-### Opcionais
-
+### Variáveis opcionais
+- `CF_CHAT_MODEL`
+- `CF_PROMPT_MODEL`
+- `CF_VISION_MODEL`
+- `CF_IMAGE_MODEL`
 - `HF_CHAT_MODEL`
-- `HF_PROMPT_MODEL`
-- `HF_VISION_MODEL`
-- `HF_IMAGE_CAPTION_MODEL`
 - `HF_IMAGE_MODEL`
 - `HF_IMAGE_EDIT_MODEL`
 - `HF_VIDEO_MODEL`
 - `HF_IMAGE_VIDEO_MODEL`
 - `SEARXNG_URL`
 
-## Pesquisa web
-
-O modo Pesquisa fica operacional quando `SEARXNG_URL` apontar para uma instância com saída JSON habilitada.
-
-## Desenvolvimento local
+## Validação
 
 ```bash
 npm install
 npm run check
-npm run dev
+npm run build
+npx wrangler@4.141.0 deploy --dry-run
 ```
 
 ## Credenciais
 
-Nunca coloque `HF_TOKEN` no frontend, em commits ou em variáveis públicas. Use Secret no Cloudflare.
+Nunca exponha `HF_TOKEN` no frontend ou no repositório.
