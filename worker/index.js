@@ -1,7 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -85,6 +85,7 @@ async function handleStatus(env) {
     providers: {
       chat: Boolean(env.HF_TOKEN),
       search: Boolean(env.SEARXNG_URL),
+      promptExpansion: Boolean(env.HF_TOKEN),
       vision: Boolean(env.HF_TOKEN),
       files: true,
       image: Boolean(env.HF_TOKEN),
@@ -94,6 +95,10 @@ async function handleStatus(env) {
     models: {
       chat: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
       chatFallback: "openai/gpt-oss-20b:fastest",
+      promptExpander:
+        env.HF_PROMPT_MODEL ||
+        env.HF_CHAT_MODEL ||
+        "openai/gpt-oss-120b:cheapest",
       vision: env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
       caption:
         env.HF_IMAGE_CAPTION_MODEL || "Salesforce/blip-image-captioning-large",
@@ -151,6 +156,125 @@ async function runTextChat(messages, env) {
   }
 
   return attempt;
+}
+
+function extractChatText(raw) {
+  try {
+    const data = JSON.parse(raw);
+    return String(data?.choices?.[0]?.message?.content || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function generationError(error) {
+  const raw =
+    error?.message ||
+    error?.cause?.message ||
+    error?.response?.statusText ||
+    String(error || "Erro desconhecido do provedor.");
+
+  const text = String(raw)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (/quota|credit|payment|required|insufficient|402/i.test(text)) {
+    return { status: 429, message: "Cota/créditos do provedor indisponíveis no momento." };
+  }
+  if (/rate.?limit|too many|429/i.test(text)) {
+    return { status: 429, message: "O provedor está limitando requisições. Tente novamente em instantes." };
+  }
+  if (/not found|404|model.*unavailable|no provider/i.test(text)) {
+    return { status: 503, message: "O modelo solicitado não está disponível por um provedor compatível agora." };
+  }
+  if (/timeout|timed out|504|408/i.test(text)) {
+    return { status: 504, message: "O provedor demorou demais para responder." };
+  }
+  if (/<!doctype|<html/i.test(raw)) {
+    return { status: 502, message: "O provedor devolveu uma página de erro em vez do resultado esperado." };
+  }
+
+  return {
+    status: 502,
+    message: text.slice(0, 1000) || "Falha no provedor de geração.",
+  };
+}
+
+async function expandCreativePrompt({
+  kind,
+  prompt,
+  history,
+  previousPrompt,
+  hasSourceImage,
+  env,
+}) {
+  const original = String(prompt || "").trim();
+  if (!original || !env.HF_TOKEN) {
+    return { prompt: original, expanded: false, model: null };
+  }
+
+  const recent = cleanHistory(history).slice(-12);
+  const model =
+    env.HF_PROMPT_MODEL ||
+    env.HF_CHAT_MODEL ||
+    "openai/gpt-oss-120b:cheapest";
+
+  const system = [
+    "Você é o diretor criativo interno da NEXUS AI.",
+    "Transforme pedidos visuais curtos em prompts de alta fidelidade sem alterar a intenção, o assunto, a quantidade de elementos nem o estilo pedido pelo usuário.",
+    "Não force fotorealismo quando o usuário pedir ilustração, anime, desenho, pintura, 3D ou outro estilo.",
+    "Preserve nomes, cores, roupas, objetos, cenário, identidade visual e restrições mencionadas.",
+    "Evite texto decorativo, explicações, aspas, listas e comentários: devolva somente o prompt final.",
+    kind === "image"
+      ? "Para imagem, detalhe composição, enquadramento, ambiente, materiais, textura, iluminação, profundidade, atmosfera e câmera/lente somente quando fizer sentido."
+      : "Para vídeo, detalhe sujeito, ação ao longo do tempo, movimento físico, movimento de câmera, enquadramento, ambiente, iluminação, atmosfera e continuidade temporal. Evite ações contraditórias.",
+    hasSourceImage
+      ? "Existe uma imagem de referência. Trate o pedido como edição/continuação: preserve tudo que o usuário não pediu para mudar e descreva claramente apenas as mudanças e a continuidade necessária."
+      : "Não existe imagem de referência. Construa a cena completa de forma coerente.",
+    "Se o pedido já estiver detalhado, refine-o sem inflar desnecessariamente.",
+  ].join(" ");
+
+  const contextParts = [];
+  if (previousPrompt) {
+    contextParts.push("Contexto visual anterior: " + String(previousPrompt).slice(0, 5000));
+  }
+  contextParts.push("Pedido atual do usuário: " + original);
+
+  const messages = [
+    { role: "system", content: system },
+    ...recent,
+    { role: "user", content: contextParts.join("\n\n") },
+  ];
+
+  let attempt = await runChat(model, messages, env, {
+    maxTokens: kind === "video" ? 750 : 600,
+    temperature: 0.62,
+    topP: 0.92,
+  });
+
+  if (!attempt.res.ok && model !== "openai/gpt-oss-20b:fastest") {
+    attempt = await runChat("openai/gpt-oss-20b:fastest", messages, env, {
+      maxTokens: kind === "video" ? 750 : 600,
+      temperature: 0.62,
+      topP: 0.92,
+    });
+  }
+
+  if (!attempt.res.ok) {
+    return { prompt: original, expanded: false, model: null };
+  }
+
+  const expanded = extractChatText(attempt.raw);
+  if (!expanded || expanded.length < Math.min(24, original.length)) {
+    return { prompt: original, expanded: false, model: attempt.model };
+  }
+
+  return {
+    prompt: expanded.slice(0, 7000),
+    expanded: expanded !== original,
+    model: attempt.model,
+  };
 }
 
 async function handleChat(request, env) {
@@ -323,6 +447,7 @@ async function handleImage(request, env) {
 
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
+  const history = cleanHistory(body.history);
   const sourceImage = dataUrlToBlob(body.sourceImage);
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
@@ -330,6 +455,16 @@ async function handleImage(request, env) {
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
+  const expansion = await expandCreativePrompt({
+    kind: "image",
+    prompt,
+    history,
+    previousPrompt,
+    hasSourceImage: Boolean(sourceImage),
+    env,
+  });
+
+  const promptForModel = expansion.prompt;
   const client = new InferenceClient(env.HF_TOKEN);
   const imageModel =
     env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
@@ -342,9 +477,7 @@ async function handleImage(request, env) {
         model: editModel,
         inputs: sourceImage,
         parameters: {
-          prompt:
-            "Edit the supplied image while preserving the identity, appearance, composition and important details of the existing subject unless the instruction explicitly changes them. User edit: " +
-            prompt,
+          prompt: promptForModel,
         },
       });
 
@@ -354,47 +487,79 @@ async function handleImage(request, env) {
           "Cache-Control": "no-store",
           "X-Nexus-Image-Mode": "edit",
           "X-Nexus-Model": editModel,
+          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+          "X-Nexus-Prompt-Model": expansion.model || "",
         },
       });
-    } catch {
-      const continuityPrompt = previousPrompt
-        ? "Create a visually consistent continuation of the previous scene. Previous scene: " +
-          previousPrompt +
-          ". New change: " +
-          prompt +
-          ". Preserve the same main subject, visual identity and scene details unless explicitly changed."
-        : prompt;
+    } catch (editError) {
+      try {
+        const continuityPrompt = [
+          "Create a visually consistent continuation of the previous scene.",
+          previousPrompt ? "Previous visual context: " + previousPrompt : "",
+          "Preserve the same main subject and all unchanged visual details.",
+          "Current requested result: " + promptForModel,
+        ].filter(Boolean).join(" ");
 
-      const regenerated = await client.textToImage({
-        model: imageModel,
-        inputs: continuityPrompt,
-      });
+        const regenerated = await client.textToImage({
+          model: imageModel,
+          inputs: continuityPrompt,
+        });
 
-      return new Response(regenerated, {
-        headers: {
-          "Content-Type": regenerated.type || "image/png",
-          "Cache-Control": "no-store",
-          "X-Nexus-Image-Mode": "continuity-fallback",
-          "X-Nexus-Model": imageModel,
-          "X-Nexus-Edit-Fallback": "1",
-        },
-      });
+        return new Response(regenerated, {
+          headers: {
+            "Content-Type": regenerated.type || "image/png",
+            "Cache-Control": "no-store",
+            "X-Nexus-Image-Mode": "continuity-fallback",
+            "X-Nexus-Model": imageModel,
+            "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+            "X-Nexus-Prompt-Model": expansion.model || "",
+            "X-Nexus-Edit-Fallback": "1",
+          },
+        });
+      } catch (fallbackError) {
+        const info = generationError(fallbackError);
+        return json(
+          {
+            error: "Não consegui gerar a imagem.",
+            provider_error: info.message,
+            attempted_model: imageModel,
+            edit_model: editModel,
+            prompt_expanded: expansion.expanded,
+          },
+          info.status
+        );
+      }
     }
   }
 
-  const image = await client.textToImage({
-    model: imageModel,
-    inputs: prompt,
-  });
+  try {
+    const image = await client.textToImage({
+      model: imageModel,
+      inputs: promptForModel,
+    });
 
-  return new Response(image, {
-    headers: {
-      "Content-Type": image.type || "image/png",
-      "Cache-Control": "no-store",
-      "X-Nexus-Image-Mode": "new",
-      "X-Nexus-Model": imageModel,
-    },
-  });
+    return new Response(image, {
+      headers: {
+        "Content-Type": image.type || "image/png",
+        "Cache-Control": "no-store",
+        "X-Nexus-Image-Mode": "new",
+        "X-Nexus-Model": imageModel,
+        "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+        "X-Nexus-Prompt-Model": expansion.model || "",
+      },
+    });
+  } catch (error) {
+    const info = generationError(error);
+    return json(
+      {
+        error: "Não consegui gerar a imagem.",
+        provider_error: info.message,
+        attempted_model: imageModel,
+        prompt_expanded: expansion.expanded,
+      },
+      info.status
+    );
+  }
 }
 
 async function handleVideo(request, env) {
@@ -403,20 +568,35 @@ async function handleVideo(request, env) {
 
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
+  const history = cleanHistory(body.history);
   const sourceImage = dataUrlToBlob(body.sourceImage);
+  const previousPrompt = String(body.previousPrompt || "")
+    .trim()
+    .slice(0, 6000);
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
+  const expansion = await expandCreativePrompt({
+    kind: "video",
+    prompt,
+    history,
+    previousPrompt,
+    hasSourceImage: Boolean(sourceImage),
+    env,
+  });
+
+  const promptForModel = expansion.prompt;
   const client = new InferenceClient(env.HF_TOKEN);
 
   if (sourceImage && typeof client.imageTextToVideo === "function") {
     const imageVideoModel =
       env.HF_IMAGE_VIDEO_MODEL || "Lightricks/LTX-Video";
+
     try {
       const video = await client.imageTextToVideo({
         model: imageVideoModel,
         inputs: sourceImage,
-        parameters: { prompt },
+        parameters: { prompt: promptForModel },
       });
 
       return new Response(video, {
@@ -425,6 +605,8 @@ async function handleVideo(request, env) {
           "Cache-Control": "no-store",
           "X-Nexus-Video-Mode": "image-to-video",
           "X-Nexus-Model": imageVideoModel,
+          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+          "X-Nexus-Prompt-Model": expansion.model || "",
         },
       });
     } catch {}
@@ -432,19 +614,35 @@ async function handleVideo(request, env) {
 
   const videoModel =
     env.HF_VIDEO_MODEL || "Wan-AI/Wan2.1-T2V-1.3B";
-  const video = await client.textToVideo({
-    model: videoModel,
-    inputs: prompt,
-  });
 
-  return new Response(video, {
-    headers: {
-      "Content-Type": video.type || "video/mp4",
-      "Cache-Control": "no-store",
-      "X-Nexus-Video-Mode": "text-to-video",
-      "X-Nexus-Model": videoModel,
-    },
-  });
+  try {
+    const video = await client.textToVideo({
+      model: videoModel,
+      inputs: promptForModel,
+    });
+
+    return new Response(video, {
+      headers: {
+        "Content-Type": video.type || "video/mp4",
+        "Cache-Control": "no-store",
+        "X-Nexus-Video-Mode": "text-to-video",
+        "X-Nexus-Model": videoModel,
+        "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+        "X-Nexus-Prompt-Model": expansion.model || "",
+      },
+    });
+  } catch (error) {
+    const info = generationError(error);
+    return json(
+      {
+        error: "Não consegui gerar o vídeo.",
+        provider_error: info.message,
+        attempted_model: videoModel,
+        prompt_expanded: expansion.expanded,
+      },
+      info.status
+    );
+  }
 }
 
 export default {
