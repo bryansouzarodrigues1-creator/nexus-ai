@@ -1,90 +1,53 @@
-# NEXUS AI v0.9
+# NEXUS AI v1.0
 
-NEXUS AI é um assistente multimodal web com React/Vite e um único Cloudflare Worker.
+NEXUS AI é um assistente multimodal web com React/Vite e um único Cloudflare Worker. A v1 maximiza inteligência por custo usando roteamento automático em vez de enviar toda pergunta para o mesmo modelo.
 
-## Arquitetura atual
+## Arquitetura
 
-```text
-React / Vite
-    ↓
-Cloudflare Worker
-    ├── Workers AI — motor principal
-    │   ├── chat: Nemotron 3 Super 120B
-    │   ├── prompt expansion: Gemma 4 26B A4B
-    │   └── imagem/edição: FLUX.2 Klein 4B
-    │
-    └── Hugging Face Inference Providers — fallback
-        ├── GPT-OSS
-        ├── FLUX
-        └── vídeo
-```
+React / Vite → Cloudflare Worker → NEXUS Router → Workers AI, com Hugging Face como fallback.
 
-O processamento pesado continua integralmente na nuvem.
+### Roteador automático
+- general / vision: `@cf/google/gemma-4-26b-a4b-it`
+- code: `@cf/zai-org/glm-4.7-flash`
+- deep reasoning: `@cf/openai/gpt-oss-120b` com esforço alto
+- image fast/edit: `@cf/black-forest-labs/flux-2-klein-4b`
+- image quality/edit: `@cf/black-forest-labs/flux-2-klein-9b`
+- search: pesquisa nativa via `web_search_options`, com SearXNG como fallback opcional
 
-## Por que dois provedores
+## Memória e cache
+- Até 60 mensagens recentes entram no orçamento de contexto.
+- Cada conversa envia seu próprio `sessionId`.
+- O Worker usa `x-session-affinity` para favorecer prompt caching e menor latência/custo.
 
-A cota gratuita do Hugging Face Inference Providers é pequena. A NEXUS agora usa a franquia diária do Cloudflare Workers AI para chat, expansão de prompt e imagem, mantendo o Hugging Face como fallback.
+## Documentos
+Arquivos simples de texto/código são lidos no navegador. PDF, DOCX, XLSX/XLS/XLSM/XLSB, ODS, ODT e Numbers são enviados ao Worker e convertidos via `env.AI.toMarkdown` antes da análise.
 
-Isso evita que a aplicação inteira pare quando os créditos mensais do Hugging Face acabarem.
+## Imagens
+- FLUX.2 usa multipart tanto para geração do zero quanto para edição.
+- A última imagem é enviada como referência real para continuidade visual.
+- A cópia de referência é reduzida para ficar dentro do limite do modelo; a imagem original é preservada.
+- Pedidos explícitos de qualidade máxima/fotorrealismo usam o 9B; o restante usa o 4B para preservar a franquia diária.
 
-## Recursos
-
-- Chat contextual com histórico
-- Cloudflare Nemotron 120B como chat principal
-- Cloudflare Gemma 4 como motor rápido e diretor criativo
-- Hugging Face GPT-OSS como fallback
-- Expansão automática de prompts multimídia
-- Geração de imagens pelo FLUX.2 Klein 4B
-- Edição real da imagem anterior por referência
-- Redimensionamento apenas da cópia de referência enviada ao modelo
-- Imagem original preservada no navegador
-- Persistência de mídia em IndexedDB
-- Análise de imagem e arquivos
-- Vídeo via Hugging Face enquanto houver cota/créditos
-- Erros de quota, HTML inválido, timeout e rate limit tratados sem derrubar o Worker
-- Provedor e modelo usados aparecem na interface
-
-## Workers AI binding
-
-O `wrangler.jsonc` inclui:
-
-```json
-"ai": {
-  "binding": "AI"
-}
-```
-
-O Worker acessa o serviço como `env.AI`.
-
-## Modelos padrão
-
-### Cloudflare
-- Chat: `@cf/nvidia/nemotron-3-120b-a12b`
-- Prompt/fast fallback: `@cf/google/gemma-4-26b-a4b-it`
-- Imagem/edição: `@cf/black-forest-labs/flux-2-klein-4b`
-
-### Hugging Face fallback
-- Chat: `openai/gpt-oss-120b:cheapest`
-- Chat fallback: `openai/gpt-oss-20b:fastest`
-- Imagem: `black-forest-labs/FLUX.1-schnell`
-- Edição: `black-forest-labs/FLUX.1-Kontext-dev`
-- Vídeo: `Wan-AI/Wan2.1-T2V-1.3B`
-- Imagem → vídeo: `Lightricks/LTX-Video`
+## Prompt Director
+Pedidos de imagem e vídeo podem ser refinados por Gemma antes da geração. Com Workers AI disponível, essa expansão não cai para o Hugging Face, evitando chamadas inúteis quando a cota do HF estiver zerada.
 
 ## Vídeo
+Vídeo continua isolado do restante do sistema. Hoje usa Hugging Face (`Wan-AI/Wan2.1-T2V-1.3B` e `Lightricks/LTX-Video`). Se a cota do HF acabar, chat, raciocínio, visão, documentos e imagem continuam pelo Cloudflare. A aplicação não ativa modelos pagos de vídeo automaticamente.
 
-Vídeo continua sendo a parte mais cara da arquitetura. A v0.9 não ativa silenciosamente modelos pagos de terceiros no Cloudflare. Se a cota do Hugging Face acabar, a interface informa isso claramente em vez de gerar uma cobrança sem autorização.
+## Cloudflare binding
+`wrangler.jsonc` usa o binding `AI` e assets do diretório `dist`.
 
-## Configuração
+## Secret
+- `HF_TOKEN`: opcional para fallbacks de chat/imagem; necessário no fluxo atual de vídeo.
 
-### Secret existente
-- `HF_TOKEN` — usado apenas para os fallbacks do Hugging Face e vídeo
-
-### Variáveis opcionais
-- `CF_CHAT_MODEL`
+## Variáveis opcionais
+- `CF_GENERAL_MODEL`
+- `CF_REASONING_MODEL`
+- `CF_CODE_MODEL`
 - `CF_PROMPT_MODEL`
 - `CF_VISION_MODEL`
-- `CF_IMAGE_MODEL`
+- `CF_IMAGE_FAST_MODEL`
+- `CF_IMAGE_QUALITY_MODEL`
 - `HF_CHAT_MODEL`
 - `HF_IMAGE_MODEL`
 - `HF_IMAGE_EDIT_MODEL`
@@ -92,15 +55,8 @@ Vídeo continua sendo a parte mais cara da arquitetura. A v0.9 não ativa silenc
 - `HF_IMAGE_VIDEO_MODEL`
 - `SEARXNG_URL`
 
-## Validação
-
-```bash
-npm install
-npm run check
-npm run build
-npx wrangler@4.141.0 deploy --dry-run
-```
+## Validação automática
+Cada push em `main` executa `npm install`, `npm run check`, `npm run build` e `npx wrangler@4.141.0 deploy --dry-run --outdir .wrangler-dry`.
 
 ## Credenciais
-
-Nunca exponha `HF_TOKEN` no frontend ou no repositório.
+Nunca coloque `HF_TOKEN` no frontend ou no GitHub.
