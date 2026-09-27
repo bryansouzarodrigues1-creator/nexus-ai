@@ -6,6 +6,7 @@ const VERSION = "1.0.0";
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
 const CF_CODE_MODEL = "@cf/zai-org/glm-4.7-flash";
+const CF_VISION_MODEL = "@cf/qwen/qwen3.8-27b";
 const CF_IMAGE_FAST_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
 const CF_IMAGE_QUALITY_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
 
@@ -148,7 +149,7 @@ async function handleStatus(env) {
       chatCode: env.CF_CODE_MODEL || CF_CODE_MODEL,
       chatFallback: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
       promptExpander: env.CF_PROMPT_MODEL || CF_GENERAL_MODEL,
-      vision: env.CF_VISION_MODEL || CF_GENERAL_MODEL,
+      vision: env.CF_VISION_MODEL || CF_VISION_MODEL,
       imageFast: env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL,
       imageQuality: env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL,
       imageFallback: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
@@ -237,15 +238,41 @@ function extractSources(data) {
     data?.result?.citations ||
     [];
 
-  if (!Array.isArray(raw)) return [];
+  const annotations =
+    data?.choices?.[0]?.message?.annotations ||
+    data?.annotations ||
+    [];
 
-  return raw.slice(0, 10).map((item, i) => {
-    if (typeof item === "string") return { title: "Fonte " + (i + 1), url: item };
-    return {
-      title: item?.title || item?.name || item?.url || ("Fonte " + (i + 1)),
-      url: item?.url || item?.href || "",
-    };
-  }).filter((x) => x.url);
+  const direct = Array.isArray(raw)
+    ? raw.map((item, i) => {
+        if (typeof item === "string") {
+          return { title: "Fonte " + (i + 1), url: item };
+        }
+        return {
+          title: item?.title || item?.name || item?.url || ("Fonte " + (i + 1)),
+          url: item?.url || item?.href || "",
+        };
+      })
+    : [];
+
+  const annotated = Array.isArray(annotations)
+    ? annotations.map((item, i) => {
+        const citation = item?.url_citation || item?.citation || item;
+        return {
+          title:
+            citation?.title ||
+            citation?.name ||
+            citation?.url ||
+            ("Fonte " + (i + 1)),
+          url: citation?.url || citation?.href || "",
+        };
+      })
+    : [];
+
+  const seen = new Set();
+  return [...direct, ...annotated]
+    .filter((x) => x.url && !seen.has(x.url) && seen.add(x.url))
+    .slice(0, 10);
 }
 
 function chooseChatRoute(message, mode, attachment) {
@@ -254,9 +281,21 @@ function chooseChatRoute(message, mode, attachment) {
   if (attachment?.kind === "image") {
     return {
       key: "vision",
-      model: CF_GENERAL_MODEL,
-      reason: "visão",
-      maxTokens: 2200,
+      model: CF_VISION_MODEL,
+      reason: "visão multimodal",
+      maxTokens: 2400,
+    };
+  }
+
+  if (
+    attachment?.kind === "text" &&
+    /\.(js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|cs|go|rs|php|rb|swift|kt|kts|sql|sh|ps1|css|html|htm|vue|svelte)$/i.test(attachment?.name || "")
+  ) {
+    return {
+      key: "code",
+      model: CF_CODE_MODEL,
+      reason: "arquivo de código",
+      maxTokens: 2800,
     };
   }
 
@@ -427,7 +466,7 @@ function generationError(error) {
     .replace(/\s+/g, " ")
     .trim();
 
-  if (/depleted.*credits|monthly included credits|quota|credit|payment|required|insufficient|402/i.test(text)) {
+  if (/depleted.*credits|monthly included credits|free allocation|account limited|3036|quota|credit|payment|required|insufficient|402/i.test(text)) {
     return {
       status: 429,
       kind: "quota",
@@ -690,7 +729,7 @@ async function handleChat(request, env) {
     ];
 
     attempt = await runTextChat(visionMessages, env, {
-      cloudflareModel: env.CF_VISION_MODEL || CF_GENERAL_MODEL,
+      cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
       hfModel: env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
       maxTokens: 2400,
       temperature: 0.45,
@@ -832,30 +871,36 @@ async function handleImage(request, env) {
 
   let cloudflareImageError = null;
   if (env.AI) {
-    try {
-      const generated = await runCloudflareImage({
-        quality,
-        prompt: sourceImage
-          ? "Edit image 0. Preserve the exact same main subject, identity, colors and unchanged scene details. Apply only this requested change: " +
-            promptForModel
-          : promptForModel,
-        sourceImage,
-        env,
-      });
+    const visualPrompt = sourceImage
+      ? "Edit image 0. Preserve the exact same main subject, identity, colors and unchanged scene details. Apply only this requested change: " +
+        promptForModel
+      : promptForModel;
 
-      return new Response(generated.bytes, {
-        headers: {
-          "Content-Type": "image/jpeg",
-          "Cache-Control": "no-store",
-          "X-Nexus-Image-Mode": sourceImage ? "edit" : "new",
-          "X-Nexus-Provider": "cloudflare",
-          "X-Nexus-Model": generated.model,
-          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-          "X-Nexus-Prompt-Model": expansion.model || "",
-        },
-      });
-    } catch (error) {
-      cloudflareImageError = error?.message || String(error);
+    for (const imageQuality of quality === "quality" ? ["quality", "fast"] : ["fast"]) {
+      try {
+        const generated = await runCloudflareImage({
+          quality: imageQuality,
+          prompt: visualPrompt,
+          sourceImage,
+          env,
+        });
+
+        return new Response(generated.bytes, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "no-store",
+            "X-Nexus-Image-Mode": sourceImage ? "edit" : "new",
+            "X-Nexus-Provider": "cloudflare",
+            "X-Nexus-Model": generated.model,
+            "X-Nexus-Quality-Fallback":
+              quality === "quality" && imageQuality === "fast" ? "1" : "0",
+            "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+            "X-Nexus-Prompt-Model": expansion.model || "",
+          },
+        });
+      } catch (error) {
+        cloudflareImageError = error?.message || String(error);
+      }
     }
   }
 
