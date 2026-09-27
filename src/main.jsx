@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useState} from 'react';
+import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X} from 'lucide-react';
 import './styles.css';
@@ -61,18 +61,24 @@ function blobToDataUrl(blob){
   });
 }
 
+function fileToDataUrl(file){return blobToDataUrl(file)}
+function fileToText(file){return file.text()}
+
 function wantsFreshImage(text){
   return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|reinicie|recomece)\b/i.test(text);
 }
 
 function App(){
-  const [threads,setThreads]=useState(readThreads);
-  const [active,setActive]=useState(()=>readThreads()[0]?.id||null);
+  const initialThreads=useMemo(()=>readThreads(),[]);
+  const [threads,setThreads]=useState(initialThreads);
+  const [active,setActive]=useState(initialThreads[0]?.id||null);
   const [input,setInput]=useState('');
   const [mode,setMode]=useState('chat');
   const [busy,setBusy]=useState(false);
   const [menu,setMenu]=useState(false);
   const [status,setStatus]=useState(null);
+  const [attachment,setAttachment]=useState(null);
+  const fileRef=useRef(null);
 
   useEffect(()=>{
     const serializable=threads.map(t=>({
@@ -120,6 +126,7 @@ function App(){
     const t={id:id(),title:'Nova conversa',messages:[]};
     setThreads(p=>[t,...p]);
     setActive(t.id);
+    setAttachment(null);
     setMenu(false);
   }
 
@@ -143,36 +150,89 @@ function App(){
     return {type,key,url:URL.createObjectURL(blob)};
   }
 
+  async function onFileSelected(e){
+    const file=e.target.files?.[0];
+    e.target.value='';
+    if(!file)return;
+
+    const maxImage=5*1024*1024;
+    const maxText=2*1024*1024;
+
+    try{
+      if(file.type.startsWith('image/')){
+        if(file.size>maxImage){window.alert('Use uma imagem de até 5 MB.');return}
+        const dataUrl=await fileToDataUrl(file);
+        setAttachment({kind:'image',name:file.name,dataUrl,file});
+        return;
+      }
+
+      if(file.size>maxText){window.alert('Use um arquivo de texto de até 2 MB.');return}
+      const text=await fileToText(file);
+      setAttachment({kind:'text',name:file.name,text:text.slice(0,60000),file});
+      setMode('chat');
+    }catch{
+      window.alert('Não consegui ler esse arquivo.');
+    }
+  }
+
+  async function prepareAttachmentMedia(att){
+    if(att?.kind!=='image'||!att.file)return null;
+    try{
+      const key=id();
+      await saveMedia(key,att.file);
+      return {type:'image',key,url:URL.createObjectURL(att.file)};
+    }catch{
+      return {type:'image',key:null,url:URL.createObjectURL(att.file)};
+    }
+  }
+
   async function send(){
     const text=input.trim();
-    if(!text||busy)return;
+    if((!text&&!attachment)||busy)return;
 
+    const effectiveText=text||(attachment?.kind==='image'?'Analise esta imagem.':'Analise este arquivo.');
     let tid=active;
     let currentThread=threads.find(t=>t.id===tid);
 
     if(!tid){
-      const t={id:id(),title:text.slice(0,40),messages:[]};
+      const t={id:id(),title:effectiveText.slice(0,40),messages:[]};
       tid=t.id;
       currentThread=t;
       setThreads(p=>[t,...p]);
       setActive(tid);
     }
 
-    const user={id:id(),role:'user',content:text,mode};
+    const activeAttachment=attachment;
+    const attachedMedia=await prepareAttachmentMedia(activeAttachment);
+
+    const user={
+      id:id(),
+      role:'user',
+      content:effectiveText,
+      mode,
+      media:attachedMedia,
+      fileName:activeAttachment?.name||null,
+      attachmentText:activeAttachment?.kind==='text'?activeAttachment.text:null
+    };
+
     setThreads(p=>p.map(t=>t.id===tid?{
       ...t,
-      title:t.messages.length?t.title:text.slice(0,40),
+      title:t.messages.length?t.title:effectiveText.slice(0,40),
       messages:[...t.messages,user]
     }:t));
 
     setInput('');
+    setAttachment(null);
     setBusy(true);
 
     try{
       if(mode==='image'){
-        const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.role==='assistant'&&m.media?.type==='image');
-        const continuePrevious=Boolean(previousImage&&!wantsFreshImage(text));
-        const sourceImage=continuePrevious?await mediaAsDataUrl(previousImage):null;
+        const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
+        const continuePrevious=Boolean(previousImage&&!wantsFreshImage(effectiveText));
+        const sourceImage=activeAttachment?.kind==='image'
+          ?activeAttachment.dataUrl
+          :continuePrevious?await mediaAsDataUrl(previousImage):null;
+
         const previousPrompt=(currentThread?.messages||[])
           .filter(m=>m.role==='user'&&m.mode==='image')
           .slice(-6)
@@ -182,7 +242,7 @@ function App(){
         const res=await fetch('/api/image',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({prompt:text,sourceImage,previousPrompt})
+          body:JSON.stringify({prompt:effectiveText,sourceImage,previousPrompt})
         });
 
         const type=res.headers.get('content-type')||'';
@@ -197,20 +257,22 @@ function App(){
         const model=res.headers.get('x-nexus-model')||'';
 
         const content=imageMode==='edit'
-          ?'Imagem editada mantendo a anterior.'
+          ?'Imagem editada mantendo a referência.'
           :imageMode==='continuity-fallback'
             ?'Imagem gerada mantendo o contexto visual possível.'
             :'Imagem gerada.';
 
         addMessage(tid,{role:'assistant',content,media,model,generationMode:imageMode});
       }else if(mode==='video'){
-        const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.role==='assistant'&&m.media?.type==='image');
-        const sourceImage=previousImage?await mediaAsDataUrl(previousImage):null;
+        const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
+        const sourceImage=activeAttachment?.kind==='image'
+          ?activeAttachment.dataUrl
+          :previousImage?await mediaAsDataUrl(previousImage):null;
 
         const res=await fetch('/api/video',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({prompt:text,sourceImage})
+          body:JSON.stringify({prompt:effectiveText,sourceImage})
         });
 
         const type=res.headers.get('content-type')||'';
@@ -223,9 +285,10 @@ function App(){
         const media=await storeGeneratedMedia(blob,'video');
         const videoMode=res.headers.get('x-nexus-video-mode')||'text-to-video';
         const model=res.headers.get('x-nexus-model')||'';
+
         addMessage(tid,{
           role:'assistant',
-          content:videoMode==='image-to-video'?'Vídeo criado a partir da última imagem.':'Vídeo gerado.',
+          content:videoMode==='image-to-video'?'Vídeo criado a partir da imagem de referência.':'Vídeo gerado.',
           media,
           model,
           generationMode:videoMode
@@ -234,12 +297,21 @@ function App(){
         const history=(currentThread?.messages||[])
           .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
           .slice(-32)
-          .map(m=>({role:m.role,content:m.content}));
+          .map(m=>({
+            role:m.role,
+            content:m.content+(m.attachmentText?'\n\nConteúdo do arquivo '+(m.fileName||'anexado')+':\n'+m.attachmentText:'')
+          }));
+
+        const payloadAttachment=activeAttachment?.kind==='image'
+          ?{kind:'image',name:activeAttachment.name,dataUrl:activeAttachment.dataUrl}
+          :activeAttachment?.kind==='text'
+            ?{kind:'text',name:activeAttachment.name,text:activeAttachment.text}
+            :null;
 
         const res=await fetch('/api/chat',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({message:text,mode,history})
+          body:JSON.stringify({message:effectiveText,mode,history,attachment:payloadAttachment})
         });
 
         const data=await res.json();
@@ -260,27 +332,35 @@ function App(){
   function chooseTool(m){
     if(m==='file'){
       setMode('chat');
-      setInput('Analise este arquivo: ');
+      fileRef.current?.click();
       return;
     }
     setMode(m);
-    if(m==='image')setInput('Crie uma imagem de ');
-    if(m==='video')setInput('Crie um vídeo de ');
+    if(m==='image'&&!input)setInput('Crie uma imagem de ');
+    if(m==='video'&&!input)setInput('Crie um vídeo de ');
     if(m==='search')setInput('');
   }
 
   const modeLabel={
     chat:'Chat',
     search:'Pesquisa web',
-    image:hasImage?'Imagem • continuidade':'Imagem',
-    video:hasImage?'Vídeo • usando última imagem':'Vídeo'
+    image:hasImage||attachment?.kind==='image'?'Imagem • continuidade':'Imagem',
+    video:hasImage||attachment?.kind==='image'?'Vídeo • imagem de referência':'Vídeo'
   }[mode]||'Chat';
 
   return <div className="app">
+    <input
+      ref={fileRef}
+      className="hidden-file"
+      type="file"
+      accept="image/*,.txt,.md,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.py,.xml,.yaml,.yml,.log"
+      onChange={onFileSelected}
+    />
+
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v0.6</span></div>
+        <div><strong>NEXUS AI</strong><span>v0.7</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -312,7 +392,7 @@ function App(){
           ?<div className="hero">
             <div className="hero-orb"><Sparkles/></div>
             <h1>O que vamos descobrir?</h1>
-            <p>Chat, pesquisa, imagem e vídeo em uma única interface.</p>
+            <p>Chat, visão, arquivos, imagem e vídeo em uma única interface.</p>
             <div className="actions">
               {starterActions.map(({icon:Icon,label,mode:m})=><button key={label} onClick={()=>chooseTool(m)}><Icon size={18}/>{label}</button>)}
             </div>
@@ -322,7 +402,8 @@ function App(){
               <div className="avatar">{m.role==='user'?'V':'N'}</div>
               <div>
                 <div>{m.content}</div>
-                {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem gerada"/>}
+                {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
+                {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
                 {m.model&&<div className="model-tag">{m.model}</div>}
                 {m.sources?.length>0&&<div className="sources">
@@ -337,19 +418,26 @@ function App(){
 
       <div className="composer-wrap">
         <div className="composer">
+          {attachment&&<div className="attachment-chip">
+            {attachment.kind==='image'
+              ?<img src={attachment.dataUrl} alt="Anexo"/>
+              :<FileText size={18}/>}
+            <span>{attachment.name}</span>
+            <button onClick={()=>setAttachment(null)} title="Remover"><X size={15}/></button>
+          </div>}
           <textarea
             value={input}
             onChange={e=>setInput(e.target.value)}
             onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}}
-            placeholder={mode==='search'?'Pesquise qualquer coisa na web…':mode==='image'?(hasImage?'Descreva a mudança na última imagem…':'Descreva a imagem…'):mode==='video'?'Descreva o vídeo…':'Pergunte qualquer coisa…'}
+            placeholder={mode==='search'?'Pesquise qualquer coisa na web…':mode==='image'?(hasImage||attachment?.kind==='image'?'Descreva a mudança na imagem…':'Descreva a imagem…'):mode==='video'?'Descreva o vídeo…':'Pergunte qualquer coisa…'}
             rows="1"
           />
           <div className="composebar">
             <div>
-              <button title="Anexar"><Paperclip size={19}/></button>
+              <button title="Anexar arquivo ou imagem" onClick={()=>fileRef.current?.click()}><Paperclip size={19}/></button>
               <span>{modeLabel}</span>
             </div>
-            <button className="send" disabled={!input.trim()||busy} onClick={send}><Send size={18}/></button>
+            <button className="send" disabled={(!input.trim()&&!attachment)||busy} onClick={send}><Send size={18}/></button>
           </div>
         </div>
         <small>Processamento pesado na nuvem. Seu dispositivo apenas envia e exibe os resultados.</small>
