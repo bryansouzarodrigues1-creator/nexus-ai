@@ -113,6 +113,22 @@ function isRichDocument(file){
   return /\.(pdf|docx|xlsx|xlsm|xlsb|xls|ods|odt|numbers)$/i.test(file?.name||'');
 }
 
+function detectExplicitMediaIntent(text){
+  const value=String(text||'').trim();
+
+  const imageIntent=
+    /\b(gere|gera|gerar|crie|cria|criar|faça|faca|fazer|desenhe|desenha|desenhar|produza|produzir|generate|create|make|draw)\b[\s\S]{0,100}\b(imagem|image|foto|photo|picture|ilustração|ilustracao|desenho|artwork)\b/i.test(value) ||
+    /\b(imagem|image|foto|photo|picture|ilustração|ilustracao|desenho|artwork)\b[\s\S]{0,70}\b(gere|gera|crie|cria|faça|faca|desenhe|produza|generate|create|make|draw)\b/i.test(value);
+
+  const videoIntent=
+    /\b(gere|gera|gerar|crie|cria|criar|faça|faca|fazer|produza|produzir|generate|create|make)\b[\s\S]{0,100}\b(vídeo|video|filme|clipe|animação|animacao)\b/i.test(value) ||
+    /\b(vídeo|video|filme|clipe|animação|animacao)\b[\s\S]{0,70}\b(gere|gera|crie|cria|faça|faca|produza|generate|create|make)\b/i.test(value);
+
+  if(videoIntent)return 'video';
+  if(imageIntent)return 'image';
+  return null;
+}
+
 function App(){
   const initialThreads=useMemo(()=>readThreads(),[]);
   const [threads,setThreads]=useState(initialThreads);
@@ -298,6 +314,10 @@ function App(){
     if((!text&&!attachment)||busy)return;
 
     const effectiveText=text||(attachment?.kind==='image'?'Analise esta imagem.':'Analise este arquivo.');
+    const autoMediaMode=mode==='chat'?detectExplicitMediaIntent(effectiveText):null;
+    const requestMode=autoMediaMode||mode;
+    if(autoMediaMode)setMode(autoMediaMode);
+
     let tid=active;
     let currentThread=threads.find(t=>t.id===tid);
 
@@ -316,7 +336,7 @@ function App(){
       id:id(),
       role:'user',
       content:effectiveText,
-      mode,
+      mode:requestMode,
       media:attachedMedia,
       fileName:activeAttachment?.name||null,
       attachmentText:activeAttachment?.kind==='text'?activeAttachment.text:null
@@ -339,7 +359,7 @@ function App(){
         .slice(-16)
         .map(m=>({role:m.role,content:m.content}));
 
-      if(mode==='image'){
+      if(requestMode==='image'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const continuePrevious=Boolean(previousImage&&!wantsFreshImage(effectiveText));
         const sourceImageRaw=activeAttachment?.kind==='image'
@@ -401,7 +421,7 @@ function App(){
           promptModel,
           generationMode:imageMode
         });
-      }else if(mode==='video'){
+      }else if(requestMode==='video'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const sourceImage=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
@@ -475,7 +495,7 @@ function App(){
           headers:apiHeaders(),
           body:JSON.stringify({
             message:effectiveText,
-            mode,
+            mode:requestMode,
             history,
             attachment:payloadAttachment,
             sessionId:tid,
