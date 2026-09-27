@@ -333,6 +333,18 @@ function chooseChatRoute(message, mode, attachment) {
     };
   }
 
+  const sensitiveContextSignals =
+    /(crime|roubo|roubar|assalto|assaltar|furto|fraude|golpe|droga|cocaína|cocaina|maconha|arma|pistola|fuzil|bomba|explosivo|hack|hacking|malware|ransomware|phishing|sexo|sexual|porn|suicid|autoles|terroris|extremis|violência|violencia|matar|morte|tortura|manipula|chantag|sequestro)/i;
+
+  if (sensitiveContextSignals.test(message)) {
+    return {
+      key: "open",
+      model: CF_CODE_MODEL,
+      reason: "contexto sensível analisado sem bloqueio por palavra-chave",
+      maxTokens: 2400,
+    };
+  }
+
   const deepSignals =
     /(intensidade máxima|pense muito|raciocínio|raciocinio|analise profundamente|análise profunda|compare em detalhes|planeje|estratégia|estrategia|arquitetura|otimize|investigue|prove|deduza|matemát|fisic|científic|trade.?off|complex|passo a passo|diagnóstico|diagnostico)/i;
 
