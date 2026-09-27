@@ -403,6 +403,7 @@ async function runCloudflareChat(model, messages, env, options = {}) {
 
 async function runTextChat(messages, env, options = {}) {
   let lastAttempt = null;
+  let cloudflareFailure = null;
 
   if (env.AI) {
     const primary = options.cloudflareModel || CF_GENERAL_MODEL;
@@ -418,6 +419,7 @@ async function runTextChat(messages, env, options = {}) {
       });
       lastAttempt = attempt;
       if (attempt.ok) return attempt;
+      cloudflareFailure = attempt;
     }
 
     if (options.cloudflareOnly) return lastAttempt;
@@ -445,7 +447,18 @@ async function runTextChat(messages, env, options = {}) {
     }
   }
 
-  return lastAttempt || {
+  if (lastAttempt && cloudflareFailure && lastAttempt.provider === "huggingface") {
+    return {
+      ...lastAttempt,
+      raw:
+        "Cloudflare Workers AI: " +
+        parseProviderError(cloudflareFailure.raw) +
+        " | Hugging Face: " +
+        parseProviderError(lastAttempt.raw),
+    };
+  }
+
+  return lastAttempt || cloudflareFailure || {
     ok: false,
     status: 503,
     raw: "Nenhum provedor de chat disponível.",
@@ -1096,7 +1109,10 @@ async function handleImage(request, env) {
     return json(
       {
         error: "Não consegui gerar a imagem.",
-        provider_error: info.message,
+        provider_error: [
+          cloudflareImageError ? "Cloudflare: " + cloudflareImageError : "",
+          "Hugging Face: " + info.message,
+        ].filter(Boolean).join(" | "),
         error_kind: info.kind,
       },
       info.status
