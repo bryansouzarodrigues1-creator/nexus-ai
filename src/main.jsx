@@ -355,6 +355,7 @@ function App(){
           content:videoMode==='image-to-video'?'Vídeo criado a partir da imagem de referência.':'Vídeo gerado.',
           media,
           model,
+          provider,
           promptExpanded,
           promptModel,
           generationMode:videoMode
