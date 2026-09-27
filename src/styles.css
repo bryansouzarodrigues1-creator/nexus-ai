@@ -16,3 +16,16 @@ video.generated{width:min(720px,100%)}
 .attachment-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
 .attachment-chip button{margin-left:auto;width:28px;height:28px}
 .file-tag{display:flex;align-items:center;gap:5px;width:max-content;max-width:100%;margin-top:8px;padding:5px 8px;border:1px solid #2a2f39;border-radius:8px;color:#9ba3b2;background:#12151b;font-size:11px}
+
+.markdown{min-width:0;overflow-wrap:anywhere}
+.markdown>:first-child{margin-top:0}.markdown>:last-child{margin-bottom:0}
+.markdown p{margin:.45em 0}.markdown h1,.markdown h2,.markdown h3{line-height:1.25;margin:1.1em 0 .45em}
+.markdown ul,.markdown ol{padding-left:1.4rem}.markdown li{margin:.2em 0}
+.markdown a{color:#8fb7ff;text-decoration:none}.markdown a:hover{text-decoration:underline}
+.markdown code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#161a21;border:1px solid #282e39;border-radius:6px;padding:.12em .35em;font-size:.9em}
+.markdown pre{overflow:auto;background:#0c0f14;border:1px solid #252a34;border-radius:12px;padding:14px;margin:12px 0}
+.markdown pre code{background:transparent;border:0;padding:0;font-size:12px;white-space:pre}
+.markdown blockquote{margin:10px 0;padding:3px 12px;border-left:3px solid #4c566a;color:#aeb5c3}
+.markdown table{display:block;max-width:100%;overflow:auto;border-collapse:collapse;margin:12px 0}
+.markdown th,.markdown td{border:1px solid #2a303b;padding:7px 10px;text-align:left}.markdown th{background:#141820}
+.plain-content{white-space:pre-wrap}
