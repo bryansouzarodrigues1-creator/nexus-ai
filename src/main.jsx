@@ -64,6 +64,25 @@ function blobToDataUrl(blob){
 function fileToDataUrl(file){return blobToDataUrl(file)}
 function fileToText(file){return file.text()}
 
+async function shrinkImageDataUrl(dataUrl,maxSide=500){
+  if(!dataUrl||!dataUrl.startsWith('data:image/'))return dataUrl;
+  return new Promise(resolve=>{
+    const img=new window.Image();
+    img.onload=()=>{
+      const scale=Math.min(1,maxSide/Math.max(img.width,img.height));
+      if(scale===1){resolve(dataUrl);return}
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.max(1,Math.round(img.width*scale));
+      canvas.height=Math.max(1,Math.round(img.height*scale));
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      resolve(canvas.toDataURL('image/jpeg',0.9));
+    };
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
+}
+
 function wantsFreshImage(text){
   return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|reinicie|recomece)\b/i.test(text);
 }
@@ -234,9 +253,12 @@ function App(){
       if(mode==='image'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const continuePrevious=Boolean(previousImage&&!wantsFreshImage(effectiveText));
-        const sourceImage=activeAttachment?.kind==='image'
+        const sourceImageRaw=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :continuePrevious?await mediaAsDataUrl(previousImage):null;
+        const sourceImage=sourceImageRaw
+          ?await shrinkImageDataUrl(sourceImageRaw,500)
+          :null;
 
         const previousPrompt=(currentThread?.messages||[])
           .filter(m=>m.role==='user'&&m.mode==='image')
@@ -258,13 +280,17 @@ function App(){
         const type=res.headers.get('content-type')||'';
         if(!res.ok||type.includes('application/json')){
           const data=await res.json();
-          throw new Error(data.error||'Falha no motor de imagem.');
+          throw new Error(
+            [data.error,data.provider_error].filter(Boolean).join(' — ')||
+            'Falha no motor de imagem.'
+          );
         }
 
         const blob=await res.blob();
         const media=await storeGeneratedMedia(blob,'image');
         const imageMode=res.headers.get('x-nexus-image-mode')||'new';
         const model=res.headers.get('x-nexus-model')||'';
+        const provider=res.headers.get('x-nexus-provider')||'';
         const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
         const promptModel=res.headers.get('x-nexus-prompt-model')||'';
 
@@ -279,6 +305,7 @@ function App(){
           content,
           media,
           model,
+          provider,
           promptExpanded,
           promptModel,
           generationMode:imageMode
@@ -309,13 +336,17 @@ function App(){
         const type=res.headers.get('content-type')||'';
         if(!res.ok||type.includes('application/json')){
           const data=await res.json();
-          throw new Error(data.error||'Falha no motor de vídeo.');
+          throw new Error(
+            [data.error,data.provider_error].filter(Boolean).join(' — ')||
+            'Falha no motor de vídeo.'
+          );
         }
 
         const blob=await res.blob();
         const media=await storeGeneratedMedia(blob,'video');
         const videoMode=res.headers.get('x-nexus-video-mode')||'text-to-video';
         const model=res.headers.get('x-nexus-model')||'';
+        const provider=res.headers.get('x-nexus-provider')||'';
         const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
         const promptModel=res.headers.get('x-nexus-prompt-model')||'';
 
@@ -354,7 +385,8 @@ function App(){
           role:'assistant',
           content:data.answer||data.error||'O motor ainda não está configurado.',
           sources:data.sources||[],
-          model:data.model||''
+          model:data.model||'',
+          provider:data.provider||''
         });
       }
     }catch(e){
@@ -395,7 +427,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v0.8</span></div>
+        <div><strong>NEXUS AI</strong><span>v0.9</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -406,7 +438,7 @@ function App(){
       </div>
       <div className="sidefoot">
         <button><Settings size={16}/> Configurações</button>
-        <div className="status"><i className={status?.providers?.chat?'ok':''}/>{status?.providers?.chat?'IA na nuvem conectada':'Aguardando HF_TOKEN'}</div>
+        <div className="status"><i className={status?.providers?.chat?'ok':''}/>{status?.providers?.chat?'IA na nuvem conectada':'Nenhum provedor conectado'}</div>
       </div>
     </aside>
 
@@ -440,7 +472,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.model}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.provider?m.provider+' · ':''}{m.model}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
