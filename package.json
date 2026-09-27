@@ -16,7 +16,9 @@
     "react": "latest",
     "react-dom": "latest",
     "typescript": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "react-markdown": "latest",
+    "remark-gfm": "latest"
   },
   "devDependencies": {}
 }
