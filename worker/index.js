@@ -1145,11 +1145,68 @@ async function handleVideo(request, env) {
   }
 }
 
+async function enforceRateLimit(request, env, pathname) {
+  if (!pathname.startsWith("/api/") || pathname === "/api/status") {
+    return null;
+  }
+
+  const clientKey =
+    request.headers.get("x-nexus-client") ||
+    request.headers.get("cf-ray") ||
+    "anonymous";
+
+  const isMedia = pathname === "/api/image" || pathname === "/api/video";
+  const limiter = isMedia ? env.MEDIA_RATE_LIMITER : env.AI_RATE_LIMITER;
+
+  try {
+    if (env.GLOBAL_AI_RATE_LIMITER) {
+      const globalResult = await env.GLOBAL_AI_RATE_LIMITER.limit({
+        key: "global-ai",
+      });
+      if (!globalResult.success) {
+        return json(
+          {
+            error:
+              "A NEXUS está com uso muito alto neste minuto. Aguarde alguns segundos e tente novamente.",
+            error_kind: "global-rate-limit",
+          },
+          429,
+          { "Retry-After": "60" }
+        );
+      }
+    }
+
+    if (limiter) {
+      const result = await limiter.limit({
+        key: String(clientKey).slice(0, 160) + ":" + pathname,
+      });
+      if (!result.success) {
+        return json(
+          {
+            error: isMedia
+              ? "Muitas gerações de mídia em pouco tempo. Aguarde um minuto para proteger a cota gratuita."
+              : "Muitas solicitações em pouco tempo. Aguarde alguns segundos e tente novamente.",
+            error_kind: "client-rate-limit",
+          },
+          429,
+          { "Retry-After": "60" }
+        );
+      }
+    }
+  } catch {
+    // Falha aberta: indisponibilidade do contador não derruba a IA.
+  }
+
+  return null;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     try {
+      const limited = await enforceRateLimit(request, env, url.pathname);
+      if (limited) return limited;
       if (url.pathname === "/api/status" && request.method === "GET")
         return handleStatus(env);
 
