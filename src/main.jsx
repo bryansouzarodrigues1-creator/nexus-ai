@@ -14,6 +14,22 @@ const starterActions=[
 
 function id(){return crypto.randomUUID?.()||Math.random().toString(36).slice(2)}
 
+function getClientId(){
+  let value=localStorage.getItem('nexus_client_id');
+  if(!value){
+    value=id();
+    localStorage.setItem('nexus_client_id',value);
+  }
+  return value;
+}
+
+function apiHeaders(){
+  return {
+    'content-type':'application/json',
+    'x-nexus-client':getClientId()
+  };
+}
+
 function readThreads(){
   try{
     const parsed=JSON.parse(localStorage.getItem('nexus_threads')||'[]');
@@ -210,7 +226,7 @@ function App(){
     try{
       const res=await fetch('/api/memory',{
         method:'POST',
-        headers:{'content-type':'application/json'},
+        headers:apiHeaders(),
         body:JSON.stringify({
           previousSummary,
           messages:chunk,
@@ -341,7 +357,7 @@ function App(){
 
         const res=await fetch('/api/image',{
           method:'POST',
-          headers:{'content-type':'application/json'},
+          headers:apiHeaders(),
           body:JSON.stringify({
             prompt:effectiveText,
             sourceImage,
@@ -399,7 +415,7 @@ function App(){
 
         const res=await fetch('/api/video',{
           method:'POST',
-          headers:{'content-type':'application/json'},
+          headers:apiHeaders(),
           body:JSON.stringify({
             prompt:effectiveText,
             sourceImage,
@@ -456,7 +472,7 @@ function App(){
 
         const res=await fetch('/api/chat',{
           method:'POST',
-          headers:{'content-type':'application/json'},
+          headers:apiHeaders(),
           body:JSON.stringify({
             message:effectiveText,
             mode,
