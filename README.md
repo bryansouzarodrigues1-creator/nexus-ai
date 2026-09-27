@@ -1,6 +1,6 @@
-# NEXUS AI v0.7
+# NEXUS AI v0.8
 
-Assistente multimodal web com React/Vite no frontend e um único Cloudflare Worker como backend e servidor dos assets.
+NEXUS AI é um assistente multimodal web com frontend React/Vite e um único Cloudflare Worker como backend/orquestrador.
 
 ## Arquitetura
 
@@ -17,28 +17,33 @@ Cloudflare Worker
 Hugging Face Inference Providers
 ```
 
-A inferência pesada acontece nos provedores de nuvem. O dispositivo do usuário apenas executa o navegador, envia os pedidos e exibe os resultados.
+A inferência pesada acontece nos provedores de nuvem. O dispositivo do usuário apenas executa o navegador, envia dados e exibe os resultados.
 
 ## Recursos atuais
 
-- Chat com histórico real de conversa e orçamento de contexto
-- Modelo principal forte com fallback automático
-- Análise de imagens por modelo de visão, com fallback de caption
-- Análise de arquivos de texto/código
+- Chat com histórico contextual e fallback automático
+- Modelo principal `openai/gpt-oss-120b:cheapest`
+- Fallback do chat para `openai/gpt-oss-20b:fastest`
+- Expansão inteligente de prompts para imagem e vídeo
+- O 120B atua como diretor criativo antes do modelo visual
+- Expansão preserva intenção, estilo, objetos, cores e restrições do usuário
+- Análise de imagens por modelo de visão com fallback de caption
+- Análise de arquivos de texto e código
 - Geração de imagens
-- Continuidade visual: a última imagem pode ser enviada como referência para edição
-- Persistência local de imagens e vídeos em IndexedDB
-- Imagem → vídeo quando o provedor/modelo suportar
+- Edição/continuidade visual usando a imagem anterior como referência
+- Persistência local de mídia em IndexedDB
+- Imagem → vídeo quando suportado pelo provedor/modelo
 - Texto → vídeo como fallback
 - Pesquisa web preparada via SearXNG
-- Histórico de conversas no navegador
+- Tratamento robusto de erros HTML, respostas inválidas, timeout, cota e rate limit
 - Status e modelos ativos em `/api/status`
 - Segredos somente no servidor
 
 ## Modelos padrão
 
 - Chat: `openai/gpt-oss-120b:cheapest`
-- Fallback do chat: `openai/gpt-oss-20b:fastest`
+- Prompt expander: usa `HF_PROMPT_MODEL`, depois `HF_CHAT_MODEL`, depois o 120B
+- Chat fallback: `openai/gpt-oss-20b:fastest`
 - Visão: `Qwen/Qwen2.5-VL-3B-Instruct`
 - Caption fallback: `Salesforce/blip-image-captioning-large`
 - Imagem: `black-forest-labs/FLUX.1-schnell`
@@ -46,17 +51,37 @@ A inferência pesada acontece nos provedores de nuvem. O dispositivo do usuário
 - Vídeo: `Wan-AI/Wan2.1-T2V-1.3B`
 - Imagem → vídeo: `Lightricks/LTX-Video`
 
-A disponibilidade e os limites dos modelos dependem dos Inference Providers associados à conta/token. Alguns modelos de edição podem exigir aceitar os termos no Hugging Face. Se a edição não estiver disponível, a NEXUS tenta preservar o contexto por regeneração.
+A disponibilidade e os limites dependem dos Inference Providers associados à conta/token.
+
+## Prompt expansion
+
+Antes de gerar imagem ou vídeo, o Worker chama um modelo de texto para transformar pedidos simples em prompts visuais de maior fidelidade.
+
+Exemplo conceitual:
+
+```text
+"um cavalo correndo na chuva"
+        ↓
+NEXUS Prompt Director
+        ↓
+descrição visual detalhada e coerente
+        ↓
+FLUX / Wan / LTX
+```
+
+Se a expansão falhar por indisponibilidade ou cota, o prompt original é usado automaticamente. A geração não depende da expansão para continuar funcionando.
+
+Quando existe uma imagem de referência, o expansor recebe instruções para preservar identidade visual e modificar somente o que o usuário pediu.
 
 ## Cloudflare
 
-O projeto usa `wrangler.jsonc` com:
+O projeto usa `wrangler.jsonc`:
 
 - Worker: `worker/index.js`
 - Static assets: `dist`
-- compatibilidade Node habilitada
+- Node compatibility habilitada
 
-Build:
+Build/deploy:
 
 ```bash
 npm install
@@ -74,6 +99,7 @@ npx wrangler deploy
 ### Opcionais
 
 - `HF_CHAT_MODEL`
+- `HF_PROMPT_MODEL`
 - `HF_VISION_MODEL`
 - `HF_IMAGE_CAPTION_MODEL`
 - `HF_IMAGE_MODEL`
@@ -84,7 +110,7 @@ npx wrangler deploy
 
 ## Pesquisa web
 
-O modo Pesquisa só fica operacional quando `SEARXNG_URL` apontar para uma instância com saída JSON habilitada.
+O modo Pesquisa fica operacional quando `SEARXNG_URL` apontar para uma instância com saída JSON habilitada.
 
 ## Desenvolvimento local
 
@@ -94,6 +120,6 @@ npm run check
 npm run dev
 ```
 
-## Segurança de credenciais
+## Credenciais
 
 Nunca coloque `HF_TOKEN` no frontend, em commits ou em variáveis públicas. Use Secret no Cloudflare.
