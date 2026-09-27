@@ -1,7 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -85,6 +85,8 @@ async function handleStatus(env) {
     providers: {
       chat: Boolean(env.HF_TOKEN),
       search: Boolean(env.SEARXNG_URL),
+      vision: Boolean(env.HF_TOKEN),
+      files: true,
       image: Boolean(env.HF_TOKEN),
       imageEdit: Boolean(env.HF_TOKEN),
       video: Boolean(env.HF_TOKEN),
@@ -92,6 +94,9 @@ async function handleStatus(env) {
     models: {
       chat: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
       chatFallback: "openai/gpt-oss-20b:fastest",
+      vision: env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
+      caption:
+        env.HF_IMAGE_CAPTION_MODEL || "Salesforce/blip-image-captioning-large",
       image: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
       imageEdit:
         env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev",
@@ -101,7 +106,7 @@ async function handleStatus(env) {
   });
 }
 
-async function runChat(model, messages, env) {
+async function runChat(model, messages, env, options = {}) {
   const res = await fetch(HF_CHAT_URL, {
     method: "POST",
     headers: {
@@ -111,9 +116,9 @@ async function runChat(model, messages, env) {
     body: JSON.stringify({
       model,
       stream: false,
-      max_tokens: 1800,
-      temperature: 0.72,
-      top_p: 0.95,
+      max_tokens: options.maxTokens || 1800,
+      temperature: options.temperature ?? 0.72,
+      top_p: options.topP ?? 0.95,
       messages,
     }),
   });
@@ -121,11 +126,39 @@ async function runChat(model, messages, env) {
   return { res, raw: await res.text(), model };
 }
 
+function parseProviderError(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return String(parsed?.error?.message || parsed?.error || raw).slice(0, 1200);
+  } catch {
+    return String(raw).slice(0, 1200);
+  }
+}
+
+async function runTextChat(messages, env) {
+  const primaryModel =
+    env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest";
+  const fallbackModel = "openai/gpt-oss-20b:fastest";
+
+  let attempt = await runChat(primaryModel, messages, env);
+
+  if (
+    !attempt.res.ok &&
+    primaryModel !== fallbackModel &&
+    [400, 402, 404, 408, 429, 500, 502, 503, 504].includes(attempt.res.status)
+  ) {
+    attempt = await runChat(fallbackModel, messages, env);
+  }
+
+  return attempt;
+}
+
 async function handleChat(request, env) {
   const body = await request.json();
   const message = String(body.message || "").trim();
   const mode = body.mode === "search" ? "search" : "chat";
   const history = cleanHistory(body.history);
+  const attachment = body.attachment || null;
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
   if (!env.HF_TOKEN)
@@ -166,6 +199,7 @@ async function handleChat(request, env) {
     "Você é NEXUS AI, um assistente geral de alta qualidade.",
     "Use o histórico para manter continuidade real e resolver referências curtas como 'por quê?', 'continua', 'isso' e pronomes.",
     "Responda no idioma do usuário, seja direto quando a pergunta for simples e aprofunde quando a tarefa exigir.",
+    "Analise cuidadosamente arquivos e imagens anexados quando existirem.",
     "Não invente fatos, fontes, memórias nem ações.",
     "Se houver incerteza relevante, diga qual é a incerteza em vez de fingir certeza.",
     "Evite recusas genéricas: diferencie pedidos informativos, educativos, analíticos, fictícios ou preventivos de pedidos realmente operacionais de alto risco.",
@@ -173,33 +207,99 @@ async function handleChat(request, env) {
     "Não moralize e não repita avisos desnecessários.",
   ].join(" ");
 
-  const messages = [
-    { role: "system", content: system },
-    ...history,
-    { role: "user", content: message + webContext },
-  ];
+  let userText = message + webContext;
 
-  const primaryModel =
-    env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest";
-  const fallbackModel = "openai/gpt-oss-20b:fastest";
-
-  let attempt = await runChat(primaryModel, messages, env);
-
-  if (
-    !attempt.res.ok &&
-    primaryModel !== fallbackModel &&
-    [400, 402, 404, 408, 429, 500, 502, 503, 504].includes(attempt.res.status)
-  ) {
-    attempt = await runChat(fallbackModel, messages, env);
+  if (attachment?.kind === "text" && typeof attachment.text === "string") {
+    const fileText = attachment.text.slice(0, 60000);
+    userText +=
+      "\n\nARQUIVO ANEXADO: " +
+      String(attachment.name || "arquivo") +
+      "\n--- INÍCIO DO ARQUIVO ---\n" +
+      fileText +
+      "\n--- FIM DO ARQUIVO ---";
   }
 
-  if (!attempt.res.ok) {
-    let detail = attempt.raw;
-    try {
-      const parsed = JSON.parse(attempt.raw);
-      detail = parsed?.error?.message || parsed?.error || attempt.raw;
-    } catch {}
-    return json({ error: "Falha no modelo: " + String(detail).slice(0, 1200) }, 502);
+  let attempt;
+
+  if (
+    attachment?.kind === "image" &&
+    typeof attachment.dataUrl === "string" &&
+    attachment.dataUrl.startsWith("data:image/")
+  ) {
+    const visionModel =
+      env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct";
+
+    const visionMessages = [
+      { role: "system", content: system },
+      ...history,
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          {
+            type: "image_url",
+            image_url: { url: attachment.dataUrl },
+          },
+        ],
+      },
+    ];
+
+    attempt = await runChat(visionModel, visionMessages, env, {
+      maxTokens: 1800,
+      temperature: 0.55,
+      topP: 0.9,
+    });
+
+    if (!attempt.res.ok) {
+      const imageBlob = dataUrlToBlob(attachment.dataUrl);
+      if (imageBlob) {
+        try {
+          const client = new InferenceClient(env.HF_TOKEN);
+          const captionModel =
+            env.HF_IMAGE_CAPTION_MODEL ||
+            "Salesforce/blip-image-captioning-large";
+          const caption = await client.imageToText({
+            model: captionModel,
+            data: imageBlob,
+          });
+          const captionText =
+            caption?.generated_text ||
+            caption?.text ||
+            JSON.stringify(caption).slice(0, 4000);
+
+          const fallbackMessages = [
+            { role: "system", content: system },
+            ...history,
+            {
+              role: "user",
+              content:
+                userText +
+                "\n\nDescrição automática obtida da imagem anexada: " +
+                captionText,
+            },
+          ];
+          attempt = await runTextChat(fallbackMessages, env);
+        } catch {}
+      }
+    }
+  } else {
+    const messages = [
+      { role: "system", content: system },
+      ...history,
+      { role: "user", content: userText },
+    ];
+    attempt = await runTextChat(messages, env);
+  }
+
+  if (!attempt?.res?.ok) {
+    return json(
+      {
+        error:
+          "Falha no modelo: " +
+          parseProviderError(attempt?.raw || "provedor indisponível"),
+      },
+      502
+    );
   }
 
   const data = JSON.parse(attempt.raw);
@@ -224,7 +324,9 @@ async function handleImage(request, env) {
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
   const sourceImage = dataUrlToBlob(body.sourceImage);
-  const previousPrompt = String(body.previousPrompt || "").trim().slice(0, 6000);
+  const previousPrompt = String(body.previousPrompt || "")
+    .trim()
+    .slice(0, 6000);
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
@@ -254,7 +356,7 @@ async function handleImage(request, env) {
           "X-Nexus-Model": editModel,
         },
       });
-    } catch (editError) {
+    } catch {
       const continuityPrompt = previousPrompt
         ? "Create a visually consistent continuation of the previous scene. Previous scene: " +
           previousPrompt +
