@@ -6,3 +6,6 @@ video.generated{width:min(720px,100%)}
 .sources a{color:#8fb7ff;font-size:12px;text-decoration:none;overflow-wrap:anywhere}
 .sources a:hover{text-decoration:underline}
 @media(max-width:760px){header .mode{max-width:calc(100vw - 110px);overflow-x:auto;scrollbar-width:none}header .mode::-webkit-scrollbar{display:none}.mode button{white-space:nowrap}}
+
+.status i.ok{background:#4ade80;box-shadow:0 0 10px #4ade8055}
+.model-tag{margin-top:8px;font-size:10px;color:#666e7e;word-break:break-all}
