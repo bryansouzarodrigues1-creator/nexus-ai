@@ -432,7 +432,7 @@ function generationError(error) {
       status: 429,
       kind: "quota",
       message:
-        "A cota do provedor de vídeo acabou. Chat e imagem podem continuar pelo Cloudflare Workers AI.",
+        "A cota do provedor acabou para esta operação.",
     };
   }
   if (/rate.?limit|too many|429|capacity temporarily exceeded|3040/i.test(text)) {
@@ -520,6 +520,7 @@ async function expandCreativePrompt({
     temperature: 0.58,
     topP: 0.9,
     sessionId,
+    cloudflareOnly: Boolean(env.AI),
   });
 
   if (!attempt.ok) {
@@ -545,29 +546,22 @@ async function runCloudflareImage({ prompt, sourceImage, quality, env }) {
     ? (env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL)
     : (env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL);
 
-  let result;
+  const form = new FormData();
   if (sourceImage) {
-    const form = new FormData();
-    form.append("input_image_0", sourceImage, "reference.png");
-    form.append("prompt", prompt);
-    form.append("width", "1024");
-    form.append("height", "1024");
-
-    const serialized = new Response(form);
-    result = await env.AI.run(model, {
-      multipart: {
-        body: serialized.body,
-        contentType: serialized.headers.get("content-type"),
-      },
-    });
-  } else {
-    result = await env.AI.run(model, {
-      prompt,
-      width: 1024,
-      height: 1024,
-      guidance: 3.5,
-    });
+    form.append("input_image_0", sourceImage, "reference.jpg");
   }
+  form.append("prompt", prompt);
+  form.append("width", "1024");
+  form.append("height", "1024");
+  form.append("guidance", sourceImage ? "4.0" : "3.5");
+
+  const serialized = new Response(form);
+  const result = await env.AI.run(model, {
+    multipart: {
+      body: serialized.body,
+      contentType: serialized.headers.get("content-type"),
+    },
+  });
 
   const base64 =
     result?.image ||
@@ -836,6 +830,7 @@ async function handleImage(request, env) {
 
   const promptForModel = expansion.prompt;
 
+  let cloudflareImageError = null;
   if (env.AI) {
     try {
       const generated = await runCloudflareImage({
@@ -845,7 +840,6 @@ async function handleImage(request, env) {
             promptForModel
           : promptForModel,
         sourceImage,
-        quality,
         env,
       });
 
@@ -860,13 +854,16 @@ async function handleImage(request, env) {
           "X-Nexus-Prompt-Model": expansion.model || "",
         },
       });
-    } catch {}
+    } catch (error) {
+      cloudflareImageError = error?.message || String(error);
+    }
   }
 
   if (!env.HF_TOKEN) {
     return json(
       {
         error: "Não consegui gerar a imagem pelo Cloudflare e não há fallback configurado.",
+        provider_error: cloudflareImageError || "Falha desconhecida do Workers AI.",
       },
       502
     );
