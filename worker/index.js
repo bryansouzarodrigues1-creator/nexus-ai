@@ -1,7 +1,11 @@
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
+
+const CF_CHAT_MODEL = "@cf/nvidia/nemotron-3-120b-a12b";
+const CF_FAST_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const CF_IMAGE_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -33,7 +37,7 @@ function cleanHistory(history) {
   const kept = [];
   for (let i = items.length - 1; i >= 0; i--) {
     const size = items[i].content.length;
-    if (total + size > 48000 && kept.length >= 8) break;
+    if (total + size > 42000 && kept.length >= 8) break;
     kept.unshift(items[i]);
     total += size;
   }
@@ -49,6 +53,35 @@ function dataUrlToBlob(dataUrl) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: match[1] || "application/octet-stream" });
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function parseProviderError(raw) {
+  const text = String(raw || "");
+  try {
+    const parsed = JSON.parse(text);
+    return String(
+      parsed?.error?.message ||
+      parsed?.error ||
+      parsed?.message ||
+      text
+    ).slice(0, 1200);
+  } catch {
+    if (/<!doctype|<html/i.test(text)) {
+      return "O provedor devolveu uma página HTML de erro em vez de JSON.";
+    }
+    return text
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1200);
+  }
 }
 
 async function searchWeb(query, env) {
@@ -96,27 +129,25 @@ async function handleStatus(env) {
     ok: true,
     version: VERSION,
     providers: {
-      chat: Boolean(env.HF_TOKEN),
+      workersAI: Boolean(env.AI),
+      huggingFace: Boolean(env.HF_TOKEN),
+      chat: Boolean(env.AI || env.HF_TOKEN),
       search: Boolean(env.SEARXNG_URL),
-      promptExpansion: Boolean(env.HF_TOKEN),
-      vision: Boolean(env.HF_TOKEN),
+      promptExpansion: Boolean(env.AI || env.HF_TOKEN),
+      vision: Boolean(env.AI || env.HF_TOKEN),
       files: true,
-      image: Boolean(env.HF_TOKEN),
-      imageEdit: Boolean(env.HF_TOKEN),
+      image: Boolean(env.AI || env.HF_TOKEN),
+      imageEdit: Boolean(env.AI || env.HF_TOKEN),
       video: Boolean(env.HF_TOKEN),
     },
     models: {
-      chat: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
-      chatFallback: "openai/gpt-oss-20b:fastest",
-      promptExpander:
-        env.HF_PROMPT_MODEL ||
-        env.HF_CHAT_MODEL ||
-        "openai/gpt-oss-120b:cheapest",
-      vision: env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
-      caption:
-        env.HF_IMAGE_CAPTION_MODEL || "Salesforce/blip-image-captioning-large",
-      image: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
-      imageEdit:
+      chatPrimary: env.CF_CHAT_MODEL || CF_CHAT_MODEL,
+      chatFallback: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
+      promptExpander: env.CF_PROMPT_MODEL || CF_FAST_MODEL,
+      vision: env.CF_VISION_MODEL || CF_FAST_MODEL,
+      imagePrimary: env.CF_IMAGE_MODEL || CF_IMAGE_MODEL,
+      imageFallback: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
+      imageEditFallback:
         env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev",
       video: env.HF_VIDEO_MODEL || "Wan-AI/Wan2.1-T2V-1.3B",
       imageVideo: env.HF_IMAGE_VIDEO_MODEL || "Lightricks/LTX-Video",
@@ -124,7 +155,17 @@ async function handleStatus(env) {
   });
 }
 
-async function runChat(model, messages, env, options = {}) {
+async function runHfChat(model, messages, env, options = {}) {
+  if (!env.HF_TOKEN) {
+    return {
+      ok: false,
+      status: 503,
+      raw: "HF_TOKEN não configurado.",
+      model,
+      provider: "huggingface",
+    };
+  }
+
   const res = await fetch(HF_CHAT_URL, {
     method: "POST",
     headers: {
@@ -141,47 +182,107 @@ async function runChat(model, messages, env, options = {}) {
     }),
   });
 
-  return { res, raw: await res.text(), model };
+  const raw = await res.text();
+  return {
+    ok: res.ok,
+    status: res.status,
+    raw,
+    model,
+    provider: "huggingface",
+  };
 }
 
-function parseProviderError(raw) {
-  const text = String(raw || "");
+async function runCloudflareChat(model, messages, env, options = {}) {
+  if (!env.AI) {
+    return {
+      ok: false,
+      status: 503,
+      raw: "Workers AI binding não disponível.",
+      model,
+      provider: "cloudflare",
+    };
+  }
+
   try {
-    const parsed = JSON.parse(text);
-    return String(
-      parsed?.error?.message ||
-      parsed?.error ||
-      parsed?.message ||
-      text
-    ).slice(0, 1200);
-  } catch {
-    if (/<!doctype|<html/i.test(text)) {
-      return "O provedor devolveu uma página HTML de erro em vez de JSON.";
-    }
-    return text
-      .replace(/<[^>]*>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 1200);
+    const data = await env.AI.run(
+      model,
+      {
+        messages,
+        max_tokens: options.maxTokens || 1800,
+        temperature: options.temperature ?? 0.72,
+        top_p: options.topP ?? 0.95,
+        chat_template_kwargs: {
+          enable_thinking: options.enableThinking ?? false,
+          low_effort: options.lowEffort ?? false,
+        },
+      },
+      { rejectIfBusy: true }
+    );
+
+    return {
+      ok: true,
+      status: 200,
+      raw: JSON.stringify(data),
+      model,
+      provider: "cloudflare",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: Number(error?.status || error?.code || 503),
+      raw: error?.message || String(error),
+      model,
+      provider: "cloudflare",
+    };
   }
 }
 
-async function runTextChat(messages, env) {
-  const primaryModel =
-    env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest";
-  const fallbackModel = "openai/gpt-oss-20b:fastest";
+async function runTextChat(messages, env, options = {}) {
+  if (env.AI) {
+    const primary =
+      options.cloudflareModel || env.CF_CHAT_MODEL || CF_CHAT_MODEL;
 
-  let attempt = await runChat(primaryModel, messages, env);
+    let attempt = await runCloudflareChat(primary, messages, env, options);
+    if (attempt.ok) return attempt;
 
-  if (
-    !attempt.res.ok &&
-    primaryModel !== fallbackModel &&
-    [400, 402, 404, 408, 429, 500, 502, 503, 504].includes(attempt.res.status)
-  ) {
-    attempt = await runChat(fallbackModel, messages, env);
+    if (primary !== CF_FAST_MODEL) {
+      attempt = await runCloudflareChat(CF_FAST_MODEL, messages, env, {
+        ...options,
+        enableThinking: false,
+      });
+      if (attempt.ok) return attempt;
+    }
   }
 
-  return attempt;
+  if (env.HF_TOKEN) {
+    const primary =
+      options.hfModel ||
+      env.HF_CHAT_MODEL ||
+      "openai/gpt-oss-120b:cheapest";
+
+    let attempt = await runHfChat(primary, messages, env, options);
+    if (attempt.ok) return attempt;
+
+    if (primary !== "openai/gpt-oss-20b:fastest") {
+      attempt = await runHfChat(
+        "openai/gpt-oss-20b:fastest",
+        messages,
+        env,
+        options
+      );
+      if (attempt.ok) return attempt;
+    }
+
+    return attempt;
+  }
+
+  return {
+    ok: false,
+    status: 503,
+    raw: "Nenhum provedor de chat disponível.",
+    model: "",
+    provider: "",
+  };
 }
 
 function extractChatText(raw) {
@@ -205,24 +306,46 @@ function generationError(error) {
     .replace(/\s+/g, " ")
     .trim();
 
-  if (/quota|credit|payment|required|insufficient|402/i.test(text)) {
-    return { status: 429, message: "Cota/créditos do provedor indisponíveis no momento." };
+  if (/depleted.*credits|monthly included credits|quota|credit|payment|required|insufficient|402/i.test(text)) {
+    return {
+      status: 429,
+      kind: "quota",
+      message:
+        "A cota do provedor de vídeo acabou. Chat e imagem podem continuar pelo Cloudflare Workers AI.",
+    };
   }
-  if (/rate.?limit|too many|429/i.test(text)) {
-    return { status: 429, message: "O provedor está limitando requisições. Tente novamente em instantes." };
+  if (/rate.?limit|too many|429|capacity temporarily exceeded|3040/i.test(text)) {
+    return {
+      status: 429,
+      kind: "rate-limit",
+      message: "O provedor está temporariamente ocupado. Tente novamente em instantes.",
+    };
   }
   if (/not found|404|model.*unavailable|no provider/i.test(text)) {
-    return { status: 503, message: "O modelo solicitado não está disponível por um provedor compatível agora." };
+    return {
+      status: 503,
+      kind: "unavailable",
+      message: "O modelo solicitado não está disponível agora.",
+    };
   }
   if (/timeout|timed out|504|408/i.test(text)) {
-    return { status: 504, message: "O provedor demorou demais para responder." };
+    return {
+      status: 504,
+      kind: "timeout",
+      message: "O provedor demorou demais para responder.",
+    };
   }
   if (/<!doctype|<html/i.test(raw)) {
-    return { status: 502, message: "O provedor devolveu uma página de erro em vez do resultado esperado." };
+    return {
+      status: 502,
+      kind: "bad-response",
+      message: "O provedor devolveu uma página de erro em vez do resultado esperado.",
+    };
   }
 
   return {
     status: 502,
+    kind: "provider",
     message: text.slice(0, 1000) || "Falha no provedor de geração.",
   };
 }
@@ -236,70 +359,104 @@ async function expandCreativePrompt({
   env,
 }) {
   const original = String(prompt || "").trim();
-  if (!original || !env.HF_TOKEN) {
+  if (!original || (!env.AI && !env.HF_TOKEN)) {
     return { prompt: original, expanded: false, model: null };
   }
 
-  const recent = cleanHistory(history).slice(-12);
-  const model =
-    env.HF_PROMPT_MODEL ||
-    env.HF_CHAT_MODEL ||
-    "openai/gpt-oss-120b:cheapest";
-
+  const recent = cleanHistory(history).slice(-10);
   const system = [
     "Você é o diretor criativo interno da NEXUS AI.",
-    "Transforme pedidos visuais curtos em prompts de alta fidelidade sem alterar a intenção, o assunto, a quantidade de elementos nem o estilo pedido pelo usuário.",
+    "Transforme pedidos visuais curtos em prompts de alta fidelidade sem mudar a intenção, os personagens, os objetos, as cores nem o estilo pedido.",
     "Não force fotorealismo quando o usuário pedir ilustração, anime, desenho, pintura, 3D ou outro estilo.",
-    "Preserve nomes, cores, roupas, objetos, cenário, identidade visual e restrições mencionadas.",
-    "Evite texto decorativo, explicações, aspas, listas e comentários: devolva somente o prompt final.",
+    "Preserve rigorosamente tudo que já existe quando houver imagem de referência e mude apenas o que o usuário pediu.",
+    "Devolva somente o prompt final, sem explicações, listas ou comentários.",
     kind === "image"
-      ? "Para imagem, detalhe composição, enquadramento, ambiente, materiais, textura, iluminação, profundidade, atmosfera e câmera/lente somente quando fizer sentido."
-      : "Para vídeo, detalhe sujeito, ação ao longo do tempo, movimento físico, movimento de câmera, enquadramento, ambiente, iluminação, atmosfera e continuidade temporal. Evite ações contraditórias.",
+      ? "Para imagem, detalhe composição, enquadramento, iluminação, ambiente, materiais, textura, profundidade e atmosfera apenas quando útil."
+      : "Para vídeo, detalhe ação ao longo do tempo, movimento físico, movimento de câmera, enquadramento, iluminação e continuidade temporal.",
     hasSourceImage
-      ? "Existe uma imagem de referência. Trate o pedido como edição/continuação: preserve tudo que o usuário não pediu para mudar e descreva claramente apenas as mudanças e a continuidade necessária."
-      : "Não existe imagem de referência. Construa a cena completa de forma coerente.",
-    "Se o pedido já estiver detalhado, refine-o sem inflar desnecessariamente.",
+      ? "Existe imagem de referência: trate a tarefa como edição/continuação e preserve a identidade visual do sujeito."
+      : "Não existe imagem de referência: descreva a cena completa de forma coerente.",
   ].join(" ");
 
-  const contextParts = [];
+  const parts = [];
   if (previousPrompt) {
-    contextParts.push("Contexto visual anterior: " + String(previousPrompt).slice(0, 5000));
+    parts.push(
+      "Contexto visual anterior: " + String(previousPrompt).slice(0, 4500)
+    );
   }
-  contextParts.push("Pedido atual do usuário: " + original);
+  parts.push("Pedido atual: " + original);
 
   const messages = [
     { role: "system", content: system },
     ...recent,
-    { role: "user", content: contextParts.join("\n\n") },
+    { role: "user", content: parts.join("\n\n") },
   ];
 
-  let attempt = await runChat(model, messages, env, {
-    maxTokens: kind === "video" ? 750 : 600,
-    temperature: 0.62,
-    topP: 0.92,
+  const attempt = await runTextChat(messages, env, {
+    cloudflareModel: env.CF_PROMPT_MODEL || CF_FAST_MODEL,
+    maxTokens: kind === "video" ? 650 : 500,
+    temperature: 0.58,
+    topP: 0.9,
+    enableThinking: false,
   });
 
-  if (!attempt.res.ok && model !== "openai/gpt-oss-20b:fastest") {
-    attempt = await runChat("openai/gpt-oss-20b:fastest", messages, env, {
-      maxTokens: kind === "video" ? 750 : 600,
-      temperature: 0.62,
-      topP: 0.92,
-    });
-  }
-
-  if (!attempt.res.ok) {
+  if (!attempt.ok) {
     return { prompt: original, expanded: false, model: null };
   }
 
   const expanded = extractChatText(attempt.raw);
-  if (!expanded || expanded.length < Math.min(24, original.length)) {
+  if (!expanded || expanded.length < Math.min(20, original.length)) {
     return { prompt: original, expanded: false, model: attempt.model };
   }
 
   return {
-    prompt: expanded.slice(0, 7000),
+    prompt: expanded.slice(0, 6500),
     expanded: expanded !== original,
     model: attempt.model,
+  };
+}
+
+async function runCloudflareImage({ prompt, sourceImage, env }) {
+  if (!env.AI) throw new Error("Workers AI não disponível.");
+
+  const model = env.CF_IMAGE_MODEL || CF_IMAGE_MODEL;
+
+  let result;
+  if (sourceImage) {
+    const form = new FormData();
+    form.append("input_image_0", sourceImage, "reference.png");
+    form.append("prompt", prompt);
+    form.append("width", "1024");
+    form.append("height", "1024");
+
+    const serialized = new Response(form);
+    result = await env.AI.run(model, {
+      multipart: {
+        body: serialized.body,
+        contentType: serialized.headers.get("content-type"),
+      },
+    });
+  } else {
+    result = await env.AI.run(model, {
+      prompt,
+      width: 1024,
+      height: 1024,
+      guidance: 3.5,
+    });
+  }
+
+  const base64 =
+    result?.image ||
+    result?.result?.image ||
+    result?.data?.image;
+
+  if (!base64 || typeof base64 !== "string") {
+    throw new Error("Workers AI não retornou uma imagem válida.");
+  }
+
+  return {
+    bytes: base64ToBytes(base64),
+    model,
   };
 }
 
@@ -311,8 +468,8 @@ async function handleChat(request, env) {
   const attachment = body.attachment || null;
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
-  if (!env.HF_TOKEN)
-    return json({ error: "HF_TOKEN ainda não foi configurado." }, 503);
+  if (!env.AI && !env.HF_TOKEN)
+    return json({ error: "Nenhum provedor de IA está configurado." }, 503);
 
   let search = { results: [], unavailable: false };
   if (mode === "search") {
@@ -329,44 +486,36 @@ async function handleChat(request, env) {
   }
 
   const webContext = search.results.length
-    ? "\n\nCONTEXTO DA WEB (use somente quando relevante e não invente além dele):\n" +
+    ? "\n\nCONTEXTO DA WEB:\n" +
       search.results
         .map(
           (r, i) =>
-            "[" +
-            (i + 1) +
-            "] " +
-            r.title +
-            "\n" +
-            r.url +
-            "\n" +
-            r.content
+            "[" + (i + 1) + "] " + r.title + "\n" + r.url + "\n" + r.content
         )
         .join("\n\n")
     : "";
 
   const system = [
     "Você é NEXUS AI, um assistente geral de alta qualidade.",
-    "Use o histórico para manter continuidade real e resolver referências curtas como 'por quê?', 'continua', 'isso' e pronomes.",
-    "Responda no idioma do usuário, seja direto quando a pergunta for simples e aprofunde quando a tarefa exigir.",
+    "Use o histórico para manter continuidade real e resolver referências curtas.",
+    "Responda no idioma do usuário e seja direto quando a pergunta for simples.",
     "Analise cuidadosamente arquivos e imagens anexados quando existirem.",
     "Não invente fatos, fontes, memórias nem ações.",
-    "Se houver incerteza relevante, diga qual é a incerteza em vez de fingir certeza.",
-    "Evite recusas genéricas: diferencie pedidos informativos, educativos, analíticos, fictícios ou preventivos de pedidos realmente operacionais de alto risco.",
-    "Quando alguma parte precisar ser limitada, limite somente essa parte e continue útil com contexto ou alternativas seguras.",
-    "Não moralize e não repita avisos desnecessários.",
+    "Se houver incerteza relevante, deixe isso claro.",
+    "Evite recusas genéricas e diferencie contexto benigno de pedidos realmente operacionais de alto risco.",
+    "Quando alguma parte precisar ser limitada, limite somente essa parte e continue útil.",
+    "Não moralize nem repita avisos desnecessários.",
   ].join(" ");
 
   let userText = message + webContext;
 
   if (attachment?.kind === "text" && typeof attachment.text === "string") {
-    const fileText = attachment.text.slice(0, 60000);
     userText +=
       "\n\nARQUIVO ANEXADO: " +
       String(attachment.name || "arquivo") +
-      "\n--- INÍCIO DO ARQUIVO ---\n" +
-      fileText +
-      "\n--- FIM DO ARQUIVO ---";
+      "\n--- INÍCIO ---\n" +
+      attachment.text.slice(0, 60000) +
+      "\n--- FIM ---";
   }
 
   let attempt;
@@ -376,9 +525,6 @@ async function handleChat(request, env) {
     typeof attachment.dataUrl === "string" &&
     attachment.dataUrl.startsWith("data:image/")
   ) {
-    const visionModel =
-      env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct";
-
     const visionMessages = [
       { role: "system", content: system },
       ...history,
@@ -386,67 +532,39 @@ async function handleChat(request, env) {
         role: "user",
         content: [
           { type: "text", text: userText },
-          {
-            type: "image_url",
-            image_url: { url: attachment.dataUrl },
-          },
+          { type: "image_url", image_url: { url: attachment.dataUrl } },
         ],
       },
     ];
 
-    attempt = await runChat(visionModel, visionMessages, env, {
+    attempt = await runTextChat(visionMessages, env, {
+      cloudflareModel: env.CF_VISION_MODEL || CF_FAST_MODEL,
+      hfModel: env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
       maxTokens: 1800,
-      temperature: 0.55,
+      temperature: 0.5,
       topP: 0.9,
     });
-
-    if (!attempt.res.ok) {
-      const imageBlob = dataUrlToBlob(attachment.dataUrl);
-      if (imageBlob) {
-        try {
-          const client = new InferenceClient(env.HF_TOKEN);
-          const captionModel =
-            env.HF_IMAGE_CAPTION_MODEL ||
-            "Salesforce/blip-image-captioning-large";
-          const caption = await client.imageToText({
-            model: captionModel,
-            data: imageBlob,
-          });
-          const captionText =
-            caption?.generated_text ||
-            caption?.text ||
-            JSON.stringify(caption).slice(0, 4000);
-
-          const fallbackMessages = [
-            { role: "system", content: system },
-            ...history,
-            {
-              role: "user",
-              content:
-                userText +
-                "\n\nDescrição automática obtida da imagem anexada: " +
-                captionText,
-            },
-          ];
-          attempt = await runTextChat(fallbackMessages, env);
-        } catch {}
-      }
-    }
   } else {
-    const messages = [
-      { role: "system", content: system },
-      ...history,
-      { role: "user", content: userText },
-    ];
-    attempt = await runTextChat(messages, env);
+    attempt = await runTextChat(
+      [
+        { role: "system", content: system },
+        ...history,
+        { role: "user", content: userText },
+      ],
+      env,
+      {
+        maxTokens: 1800,
+        temperature: 0.7,
+        topP: 0.95,
+      }
+    );
   }
 
-  if (!attempt?.res?.ok) {
+  if (!attempt?.ok) {
     return json(
       {
-        error:
-          "Falha no modelo: " +
-          parseProviderError(attempt?.raw || "provedor indisponível"),
+        error: "Não consegui acessar nenhum modelo de chat disponível.",
+        provider_error: parseProviderError(attempt?.raw || ""),
       },
       502
     );
@@ -467,11 +585,15 @@ async function handleChat(request, env) {
   }
 
   const answer =
-    data?.choices?.[0]?.message?.content || "O modelo respondeu sem texto.";
+    data?.choices?.[0]?.message?.content ||
+    data?.response ||
+    data?.result?.response ||
+    "O modelo respondeu sem texto.";
 
   return json({
     answer,
     model: attempt.model,
+    provider: attempt.provider,
     sources: search.results.map((r) => ({
       title: r.title,
       url: r.url,
@@ -481,9 +603,6 @@ async function handleChat(request, env) {
 }
 
 async function handleImage(request, env) {
-  if (!env.HF_TOKEN)
-    return json({ error: "HF_TOKEN não configurado." }, 503);
-
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
   const history = cleanHistory(body.history);
@@ -493,6 +612,8 @@ async function handleImage(request, env) {
     .slice(0, 6000);
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
+  if (!env.AI && !env.HF_TOKEN)
+    return json({ error: "Nenhum provedor de imagem está disponível." }, 503);
 
   const expansion = await expandCreativePrompt({
     kind: "image",
@@ -504,85 +625,86 @@ async function handleImage(request, env) {
   });
 
   const promptForModel = expansion.prompt;
+
+  if (env.AI) {
+    try {
+      const generated = await runCloudflareImage({
+        prompt: sourceImage
+          ? "Edit image 0. Preserve the exact same main subject, identity, colors and unchanged scene details. Apply only this requested change: " +
+            promptForModel
+          : promptForModel,
+        sourceImage,
+        env,
+      });
+
+      return new Response(generated.bytes, {
+        headers: {
+          "Content-Type": "image/jpeg",
+          "Cache-Control": "no-store",
+          "X-Nexus-Image-Mode": sourceImage ? "edit" : "new",
+          "X-Nexus-Provider": "cloudflare",
+          "X-Nexus-Model": generated.model,
+          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
+          "X-Nexus-Prompt-Model": expansion.model || "",
+        },
+      });
+    } catch {}
+  }
+
+  if (!env.HF_TOKEN) {
+    return json(
+      {
+        error: "Não consegui gerar a imagem pelo Cloudflare e não há fallback configurado.",
+      },
+      502
+    );
+  }
+
   const client = new InferenceClient(env.HF_TOKEN);
   const imageModel =
     env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
   const editModel =
     env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev";
 
-  if (sourceImage) {
-    try {
-      const edited = await client.imageToImage({
-        model: editModel,
-        inputs: sourceImage,
-        parameters: {
-          prompt: promptForModel,
-        },
-      });
-
-      return new Response(edited, {
-        headers: {
-          "Content-Type": edited.type || "image/png",
-          "Cache-Control": "no-store",
-          "X-Nexus-Image-Mode": "edit",
-          "X-Nexus-Model": editModel,
-          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-          "X-Nexus-Prompt-Model": expansion.model || "",
-        },
-      });
-    } catch (editError) {
-      try {
-        const continuityPrompt = [
-          "Create a visually consistent continuation of the previous scene.",
-          previousPrompt ? "Previous visual context: " + previousPrompt : "",
-          "Preserve the same main subject and all unchanged visual details.",
-          "Current requested result: " + promptForModel,
-        ].filter(Boolean).join(" ");
-
-        const regenerated = await client.textToImage({
-          model: imageModel,
-          inputs: continuityPrompt,
-        });
-
-        return new Response(regenerated, {
-          headers: {
-            "Content-Type": regenerated.type || "image/png",
-            "Cache-Control": "no-store",
-            "X-Nexus-Image-Mode": "continuity-fallback",
-            "X-Nexus-Model": imageModel,
-            "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-            "X-Nexus-Prompt-Model": expansion.model || "",
-            "X-Nexus-Edit-Fallback": "1",
-          },
-        });
-      } catch (fallbackError) {
-        const info = generationError(fallbackError);
-        return json(
-          {
-            error: "Não consegui gerar a imagem.",
-            provider_error: info.message,
-            attempted_model: imageModel,
-            edit_model: editModel,
-            prompt_expanded: expansion.expanded,
-          },
-          info.status
-        );
-      }
-    }
-  }
-
   try {
-    const image = await client.textToImage({
-      model: imageModel,
-      inputs: promptForModel,
-    });
+    let image;
+    let mode = "new";
+    let model = imageModel;
+
+    if (sourceImage) {
+      try {
+        image = await client.imageToImage({
+          model: editModel,
+          inputs: sourceImage,
+          parameters: { prompt: promptForModel },
+        });
+        mode = "edit";
+        model = editModel;
+      } catch {
+        image = await client.textToImage({
+          model: imageModel,
+          inputs:
+            "Preserve the previous subject and scene identity. " +
+            (previousPrompt ? "Previous context: " + previousPrompt + ". " : "") +
+            "Current result: " +
+            promptForModel,
+        });
+        mode = "continuity-fallback";
+      }
+    } else {
+      image = await client.textToImage({
+        model: imageModel,
+        inputs: promptForModel,
+      });
+    }
 
     return new Response(image, {
       headers: {
         "Content-Type": image.type || "image/png",
         "Cache-Control": "no-store",
-        "X-Nexus-Image-Mode": "new",
-        "X-Nexus-Model": imageModel,
+        "X-Nexus-Image-Mode": mode,
+        "X-Nexus-Provider": "huggingface",
+        "X-Nexus-Model": model,
         "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
         "X-Nexus-Prompt-Model": expansion.model || "",
       },
@@ -593,8 +715,7 @@ async function handleImage(request, env) {
       {
         error: "Não consegui gerar a imagem.",
         provider_error: info.message,
-        attempted_model: imageModel,
-        prompt_expanded: expansion.expanded,
+        error_kind: info.kind,
       },
       info.status
     );
@@ -602,9 +723,6 @@ async function handleImage(request, env) {
 }
 
 async function handleVideo(request, env) {
-  if (!env.HF_TOKEN)
-    return json({ error: "HF_TOKEN não configurado." }, 503);
-
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
   const history = cleanHistory(body.history);
@@ -624,18 +742,27 @@ async function handleVideo(request, env) {
     env,
   });
 
-  const promptForModel = expansion.prompt;
+  if (!env.HF_TOKEN) {
+    return json(
+      {
+        error:
+          "Vídeo ainda precisa de um provedor de GPU com créditos. Chat e imagem continuam funcionando gratuitamente pelo Cloudflare.",
+        error_kind: "video-provider-required",
+      },
+      503
+    );
+  }
+
   const client = new InferenceClient(env.HF_TOKEN);
 
   if (sourceImage && typeof client.imageTextToVideo === "function") {
     const imageVideoModel =
       env.HF_IMAGE_VIDEO_MODEL || "Lightricks/LTX-Video";
-
     try {
       const video = await client.imageTextToVideo({
         model: imageVideoModel,
         inputs: sourceImage,
-        parameters: { prompt: promptForModel },
+        parameters: { prompt: expansion.prompt },
       });
 
       return new Response(video, {
@@ -643,6 +770,7 @@ async function handleVideo(request, env) {
           "Content-Type": video.type || "video/mp4",
           "Cache-Control": "no-store",
           "X-Nexus-Video-Mode": "image-to-video",
+          "X-Nexus-Provider": "huggingface",
           "X-Nexus-Model": imageVideoModel,
           "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
           "X-Nexus-Prompt-Model": expansion.model || "",
@@ -657,7 +785,7 @@ async function handleVideo(request, env) {
   try {
     const video = await client.textToVideo({
       model: videoModel,
-      inputs: promptForModel,
+      inputs: expansion.prompt,
     });
 
     return new Response(video, {
@@ -665,6 +793,7 @@ async function handleVideo(request, env) {
         "Content-Type": video.type || "video/mp4",
         "Cache-Control": "no-store",
         "X-Nexus-Video-Mode": "text-to-video",
+        "X-Nexus-Provider": "huggingface",
         "X-Nexus-Model": videoModel,
         "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
         "X-Nexus-Prompt-Model": expansion.model || "",
@@ -674,10 +803,13 @@ async function handleVideo(request, env) {
     const info = generationError(error);
     return json(
       {
-        error: "Não consegui gerar o vídeo.",
+        error:
+          info.kind === "quota"
+            ? "Os créditos mensais do provedor de vídeo acabaram. Chat e imagem continuam pelo Cloudflare; vídeo precisa esperar a renovação ou usar um provedor pago."
+            : "Não consegui gerar o vídeo.",
         provider_error: info.message,
+        error_kind: info.kind,
         attempted_model: videoModel,
-        prompt_expanded: expansion.expanded,
       },
       info.status
     );
