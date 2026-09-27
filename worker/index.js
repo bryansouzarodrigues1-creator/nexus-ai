@@ -29,7 +29,7 @@ async function searchWeb(query, env) {
 async function handleStatus(env) {
   return json({
     ok: true,
-    version: "0.4.0",
+    version: "0.5.0",
     providers: {
       chat: Boolean(env.HF_TOKEN),
       search: Boolean(env.SEARXNG_URL),
@@ -72,11 +72,11 @@ async function handleChat(request, env) {
   const primaryModel = env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest";
   const fallbackModel = "openai/gpt-oss-20b:fastest";
   const system = [
-    "Você é NEXUS AI, um assistente geral, inteligente, direto e útil.",
+    "Você é NEXUS AI, um assistente geral, inteligente, direto e útil. Priorize respostas completas, contextuais e específicas em vez de recusas genéricas.",
     "Mantenha continuidade entre as mensagens da conversa. Resolva referências curtas como 'por quê?', 'e isso?', 'continua' e pronomes usando o histórico recebido.",
     "Nunca diga que falta contexto quando o histórico já contém o contexto necessário.",
     "Responda no idioma do usuário e adapte o nível de detalhe ao pedido.",
-    "Não invente fatos, fontes ou ações que não aconteceram.",
+    "Não invente fatos, fontes ou ações que não aconteceram. Diferencie pedidos informativos, educativos, históricos, analíticos, fictícios e preventivos de pedidos realmente operacionais.",
     "Quando um pedido for perigoso ou ilegal, não forneça instruções acionáveis; explique brevemente o motivo e ofereça ajuda segura relacionada, preservando o contexto da conversa."
   ].join(" ");
 
@@ -97,6 +97,8 @@ async function handleChat(request, env) {
         model,
         stream: false,
         max_tokens: 1400,
+        temperature: 0.7,
+        top_p: 0.95,
         messages
       })
     });
