@@ -46,7 +46,12 @@ function App(){
         const url=URL.createObjectURL(blob);
         addMessage(tid,{role:'assistant',content:mode==='image'?'Imagem gerada.':'Vídeo gerado.',media:{type:mode,url}});
       }else{
-        const res=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,mode})});
+        const currentThread=threads.find(t=>t.id===tid);
+        const history=(currentThread?.messages||[])
+          .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
+          .slice(-20)
+          .map(m=>({role:m.role,content:m.content}));
+        const res=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({message:text,mode,history})});
         const data=await res.json();
         addMessage(tid,{role:'assistant',content:data.answer||data.error||'O motor ainda não está configurado.',sources:data.sources||[]});
       }
@@ -67,7 +72,7 @@ function App(){
 
   return <div className="app">
     <aside className={menu?'sidebar open':'sidebar'}>
-      <div className="brand"><div className="orb">N</div><div><strong>NEXUS AI</strong><span>v0.2</span></div><button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button></div>
+      <div className="brand"><div className="orb">N</div><div><strong>NEXUS AI</strong><span>v0.4</span></div><button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button></div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
       <div className="history">{threads.map(t=><button key={t.id} onClick={()=>{setActive(t.id);setMenu(false)}} className={t.id===active?'active':''}><MessageSquare size={15}/><span>{t.title}</span></button>)}</div>
       <div className="sidefoot"><button><Settings size={16}/> Configurações</button><div className="status"><i/>{status?.providers?.chat?'IA conectável':'Aguardando segredo HF_TOKEN'}</div></div>
