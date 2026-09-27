@@ -29,7 +29,7 @@ async function searchWeb(query, env) {
 async function handleStatus(env) {
   return json({
     ok: true,
-    version: "0.3.0",
+    version: "0.4.0",
     providers: {
       chat: Boolean(env.HF_TOKEN),
       search: Boolean(env.SEARXNG_URL),
@@ -37,7 +37,7 @@ async function handleStatus(env) {
       video: Boolean(env.HF_TOKEN)
     },
     models: {
-      chat: env.HF_CHAT_MODEL || "openai/gpt-oss-20b:fastest",
+      chat: env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest",
       image: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
       video: env.HF_VIDEO_MODEL || "Wan-AI/Wan2.1-T2V-1.3B"
     }
@@ -48,6 +48,12 @@ async function handleChat(request, env) {
   const body = await request.json();
   const message = String(body.message || "").trim();
   const mode = body.mode === "search" ? "search" : "chat";
+  const history = Array.isArray(body.history)
+    ? body.history
+        .filter(m => (m?.role === "user" || m?.role === "assistant") && typeof m?.content === "string")
+        .slice(-20)
+        .map(m => ({ role: m.role, content: m.content.slice(0, 6000) }))
+    : [];
   if (!message) return json({ error: "Mensagem vazia." }, 400);
   if (!env.HF_TOKEN) return json({ error: "HF_TOKEN ainda não foi configurado no Cloudflare." }, 503);
 
@@ -63,35 +69,55 @@ async function handleChat(request, env) {
     ).join("\n\n")
     : "";
 
-  const model = env.HF_CHAT_MODEL || "openai/gpt-oss-20b:fastest";
-  const res = await fetch(HF_CHAT_URL, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + env.HF_TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      max_tokens: 900,
-      messages: [
-        { role: "system", content: "Você é NEXUS AI, um assistente geral, direto e útil. Responda em português quando o usuário falar em português. Não invente fontes." },
-        { role: "user", content: message + context }
-      ]
-    })
-  });
+  const primaryModel = env.HF_CHAT_MODEL || "openai/gpt-oss-120b:cheapest";
+  const fallbackModel = "openai/gpt-oss-20b:fastest";
+  const system = [
+    "Você é NEXUS AI, um assistente geral, inteligente, direto e útil.",
+    "Mantenha continuidade entre as mensagens da conversa. Resolva referências curtas como 'por quê?', 'e isso?', 'continua' e pronomes usando o histórico recebido.",
+    "Nunca diga que falta contexto quando o histórico já contém o contexto necessário.",
+    "Responda no idioma do usuário e adapte o nível de detalhe ao pedido.",
+    "Não invente fatos, fontes ou ações que não aconteceram.",
+    "Quando um pedido for perigoso ou ilegal, não forneça instruções acionáveis; explique brevemente o motivo e ofereça ajuda segura relacionada, preservando o contexto da conversa."
+  ].join(" ");
 
-  const raw = await res.text();
-  if (!res.ok) {
-    let detail = raw;
-    try { detail = JSON.parse(raw)?.error?.message || raw; } catch {}
+  const messages = [
+    { role: "system", content: system },
+    ...history,
+    { role: "user", content: message + context }
+  ];
+
+  async function runModel(model) {
+    const res = await fetch(HF_CHAT_URL, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + env.HF_TOKEN,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        max_tokens: 1400,
+        messages
+      })
+    });
+    return { res, raw: await res.text(), model };
+  }
+
+  let attempt = await runModel(primaryModel);
+  if (!attempt.res.ok && primaryModel !== fallbackModel && [400, 402, 404, 429, 503].includes(attempt.res.status)) {
+    attempt = await runModel(fallbackModel);
+  }
+
+  if (!attempt.res.ok) {
+    let detail = attempt.raw;
+    try { detail = JSON.parse(attempt.raw)?.error?.message || attempt.raw; } catch {}
     return json({ error: "Falha no provedor: " + detail }, 502);
   }
 
-  const data = JSON.parse(raw);
+  const data = JSON.parse(attempt.raw);
   return json({
     answer: data?.choices?.[0]?.message?.content || "O modelo respondeu sem texto.",
-    model,
+    model: attempt.model,
     sources: search.results.map(r => ({ title: r.title, url: r.url }))
   });
 }
