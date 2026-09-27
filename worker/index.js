@@ -65,9 +65,22 @@ async function searchWeb(query, env) {
     headers: { "User-Agent": "NEXUS-AI/" + VERSION },
   });
 
-  if (!res.ok) throw new Error("Pesquisa web respondeu " + res.status);
+  const raw = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      "Pesquisa web respondeu " + res.status + ": " + parseProviderError(raw)
+    );
+  }
 
-  const data = await res.json();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "A pesquisa web devolveu uma resposta inválida em vez de JSON."
+    );
+  }
+
   return {
     unavailable: false,
     results: (data.results || []).slice(0, 8).map((r) => ({
@@ -132,11 +145,24 @@ async function runChat(model, messages, env, options = {}) {
 }
 
 function parseProviderError(raw) {
+  const text = String(raw || "");
   try {
-    const parsed = JSON.parse(raw);
-    return String(parsed?.error?.message || parsed?.error || raw).slice(0, 1200);
+    const parsed = JSON.parse(text);
+    return String(
+      parsed?.error?.message ||
+      parsed?.error ||
+      parsed?.message ||
+      text
+    ).slice(0, 1200);
   } catch {
-    return String(raw).slice(0, 1200);
+    if (/<!doctype|<html/i.test(text)) {
+      return "O provedor devolveu uma página HTML de erro em vez de JSON.";
+    }
+    return text
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 1200);
   }
 }
 
@@ -426,7 +452,20 @@ async function handleChat(request, env) {
     );
   }
 
-  const data = JSON.parse(attempt.raw);
+  let data;
+  try {
+    data = JSON.parse(attempt.raw);
+  } catch {
+    return json(
+      {
+        error: "O provedor de chat devolveu uma resposta inválida.",
+        provider_error: parseProviderError(attempt.raw),
+        model: attempt.model,
+      },
+      502
+    );
+  }
+
   const answer =
     data?.choices?.[0]?.message?.content || "O modelo respondeu sem texto.";
 
