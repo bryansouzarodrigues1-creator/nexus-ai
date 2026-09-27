@@ -7,6 +7,32 @@
   "ai": {
     "binding": "AI"
   },
+  "ratelimits": [
+    {
+      "name": "AI_RATE_LIMITER",
+      "namespace_id": "904201001",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      "name": "MEDIA_RATE_LIMITER",
+      "namespace_id": "904201002",
+      "simple": {
+        "limit": 8,
+        "period": 60
+      }
+    },
+    {
+      "name": "GLOBAL_AI_RATE_LIMITER",
+      "namespace_id": "904201003",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS"
