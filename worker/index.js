@@ -1,7 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
