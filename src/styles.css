@@ -9,3 +9,10 @@ video.generated{width:min(720px,100%)}
 
 .status i.ok{background:#4ade80;box-shadow:0 0 10px #4ade8055}
 .model-tag{margin-top:8px;font-size:10px;color:#666e7e;word-break:break-all}
+
+.hidden-file{display:none}
+.attachment-chip{display:flex;align-items:center;gap:9px;margin:0 0 8px;padding:7px 9px;border:1px solid #292e39;background:#171a21;border-radius:11px;color:#bbc1cc;font-size:12px}
+.attachment-chip img{width:38px;height:38px;object-fit:cover;border-radius:8px;border:1px solid #303642}
+.attachment-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
+.attachment-chip button{margin-left:auto;width:28px;height:28px}
+.file-tag{display:flex;align-items:center;gap:5px;width:max-content;max-width:100%;margin-top:8px;padding:5px 8px;border:1px solid #2a2f39;border-radius:8px;color:#9ba3b2;background:#12151b;font-size:11px}
