@@ -163,6 +163,13 @@ function App(){
     setThreads(p=>p.map(t=>t.id===tid?{...t,messages:[...t.messages,{id:id(),...msg}]}:t));
   }
 
+  function updateMessage(tid,msgId,patch){
+    setThreads(p=>p.map(t=>t.id===tid?{
+      ...t,
+      messages:t.messages.map(m=>m.id===msgId?{...m,...patch}:m)
+    }:t));
+  }
+
   async function mediaAsDataUrl(msg){
     if(!msg?.media)return null;
     try{
@@ -177,6 +184,52 @@ function App(){
     const key=id();
     try{await saveMedia(key,blob)}catch{}
     return {type,key,url:URL.createObjectURL(blob)};
+  }
+
+  async function refreshMemoryIfNeeded(tid,current){
+    const messages=current?.messages||[];
+    const previousSummary=current?.summary||'';
+    const summaryUpTo=Number(current?.summaryUpTo||0);
+    const keepRecent=30;
+    const target=Math.max(0,messages.length-keepRecent);
+
+    if(target-summaryUpTo<15){
+      return {summary:previousSummary,summaryUpTo};
+    }
+
+    const chunk=messages
+      .slice(summaryUpTo,target)
+      .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
+      .map(m=>({
+        role:m.role,
+        content:m.content+(m.attachmentText?'\n\nContexto de '+(m.fileName||'arquivo')+':\n'+m.attachmentText.slice(0,30000):'')
+      }));
+
+    if(!chunk.length)return {summary:previousSummary,summaryUpTo};
+
+    try{
+      const res=await fetch('/api/memory',{
+        method:'POST',
+        headers:{'content-type':'application/json'},
+        body:JSON.stringify({
+          previousSummary,
+          messages:chunk,
+          sessionId:tid
+        })
+      });
+      const data=await res.json();
+      const summary=data.summary||previousSummary;
+      if(summary){
+        setThreads(p=>p.map(t=>t.id===tid?{
+          ...t,
+          summary,
+          summaryUpTo:target
+        }:t));
+        return {summary,summaryUpTo:target};
+      }
+    }catch{}
+
+    return {summary:previousSummary,summaryUpTo};
   }
 
   async function onFileSelected(e){
@@ -264,6 +317,7 @@ function App(){
     setBusy(true);
 
     try{
+      const memoryState=await refreshMemoryIfNeeded(tid,currentThread);
       const creativeHistory=(currentThread?.messages||[])
         .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
         .slice(-16)
@@ -383,9 +437,10 @@ function App(){
           generationMode:videoMode
         });
       }else{
+        const historyLimit=memoryState.summary?32:60;
         const history=(currentThread?.messages||[])
           .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
-          .slice(-60)
+          .slice(-historyLimit)
           .map(m=>({
             role:m.role,
             content:m.content+(m.attachmentText?'\n\nConteúdo do arquivo '+(m.fileName||'anexado')+':\n'+m.attachmentText:'')
@@ -402,10 +457,20 @@ function App(){
         const res=await fetch('/api/chat',{
           method:'POST',
           headers:{'content-type':'application/json'},
-          body:JSON.stringify({message:effectiveText,mode,history,attachment:payloadAttachment,sessionId:tid})
+          body:JSON.stringify({
+            message:effectiveText,
+            mode,
+            history,
+            attachment:payloadAttachment,
+            sessionId:tid,
+            memorySummary:memoryState.summary||''
+          })
         });
 
         const data=await res.json();
+        if(data.documentContext&&activeAttachment?.kind==='document'){
+          updateMessage(tid,user.id,{attachmentText:data.documentContext});
+        }
         addMessage(tid,{
           role:'assistant',
           content:data.answer||data.error||'O motor ainda não está configurado.',
