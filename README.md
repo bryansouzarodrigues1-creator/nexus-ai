@@ -1,4 +1,4 @@
-# NEXUS AI v2.4
+# NEXUS AI v2.5
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -235,6 +235,81 @@ Bindings nativos protegem a franquia:
 - limite agregado de uso de IA.
 
 O frontend usa um UUID anônimo local apenas para controle de abuso.
+
+## Adaptive Core V2.5
+
+A V2.5 transforma o Learning Loop em um roteador que realmente usa o histórico.
+
+### Adaptive Router
+
+O roteador agora combina:
+
+- heurística base do pedido;
+- confiabilidade operacional;
+- feedback explícito positivo/negativo;
+- score de verificadores;
+- latência média;
+- custo relativo da rota;
+- quantidade de evidência disponível;
+- exploração controlada de alternativas.
+
+O histórico usa suavização e priors para impedir que uma ou duas amostras mudem a rota prematuramente.
+
+Pedidos explícitos de raciocínio profundo ou qualidade máxima continuam bloqueando downgrade automático.
+
+### Falha operacional não é falha de qualidade
+
+O Learning Store diferencia:
+
+- quota/créditos;
+- rate limit;
+- autenticação;
+- incompatibilidade de modelo/task;
+- timeout/falha transitória;
+- erro de qualidade.
+
+Assim, um modelo não perde reputação de qualidade apenas porque um provedor ficou sem saldo ou indisponível.
+
+### Chat adaptativo
+
+Rotas gerais e de código podem mudar de modelo somente quando há evidência histórica suficiente.
+
+Rotas de pesquisa, visão e raciocínio profundo permanecem mais conservadoras.
+
+### Imagem adaptativa
+
+No modo normal, a NEXUS pode escolher entre o modelo rápido e o modelo de qualidade usando o histórico de:
+
+- verifier visual;
+- feedback do usuário;
+- confiabilidade;
+- latência;
+- custo relativo.
+
+Quando o usuário pede qualidade máxima explicitamente, o modelo de qualidade continua obrigatório como primeira tentativa.
+
+### Diagnóstico de aprendizado
+
+Novo endpoint:
+
+```text
+GET /api/learning/status
+```
+
+Ele retorna somente telemetria agregada e lições reutilizáveis. Não retorna conteúdo bruto de conversas.
+
+A interface agora possui o painel **Aprendizado**, mostrando:
+
+- modelos e rotas rastreados;
+- confiabilidade;
+- aprovação explícita;
+- score médio;
+- latência;
+- quantidade de amostras;
+- falhas operacionais versus falhas de qualidade;
+- lições aprendidas.
+
+O roteador puro possui testes de regressão executados no `npm run check`.
 
 ## Core Focus V2.4
 
