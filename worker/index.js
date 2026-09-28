@@ -2464,50 +2464,170 @@ function configuredVideoProviderOrder(env, hasSourceImage) {
   });
 }
 
+function classifyVideoProviderFailure(error) {
+  const text = String(
+    error?.message ||
+    error ||
+    ""
+  ).toLowerCase();
+
+  if (
+    /depleted|insufficient.*credit|credit.*exhaust|quota|billing|payment required|pre.?paid|balance.*low|no credits/.test(text)
+  ) {
+    return {
+      kind: "quota",
+      cooldownMs: 6 * 60 * 60 * 1000,
+    };
+  }
+
+  if (/429|rate limit|too many requests|throttl/.test(text)) {
+    return {
+      kind: "rate-limit",
+      cooldownMs: 12 * 60 * 1000,
+    };
+  }
+
+  if (/401|403|unauthor|forbidden|invalid.*key|api key|token.*invalid/.test(text)) {
+    return {
+      kind: "auth",
+      cooldownMs: 15 * 60 * 1000,
+    };
+  }
+
+  if (
+    /not supported|unsupported|path .* not found|model.*not.*available|task.*not.*support|404/.test(text)
+  ) {
+    return {
+      kind: "compatibility",
+      cooldownMs: 12 * 60 * 60 * 1000,
+    };
+  }
+
+  if (
+    /timeout|timed out|temporar|service unavailable|bad gateway|gateway timeout|\b500\b|\b502\b|\b503\b|\b504\b/.test(text)
+  ) {
+    return {
+      kind: "transient",
+      cooldownMs: 2 * 60 * 1000,
+    };
+  }
+
+  return {
+    kind: "unknown",
+    cooldownMs: 90 * 1000,
+  };
+}
+
+async function getVideoProviderHealth(env) {
+  const stub = learningStub(env);
+  if (!stub) return {};
+  try {
+    return await stub.getProviderHealth();
+  } catch {
+    return {};
+  }
+}
+
+async function markVideoProviderFailure(env, provider, error) {
+  const stub = learningStub(env);
+  if (!stub) return null;
+
+  const classification = classifyVideoProviderFailure(error);
+  try {
+    return await stub.markProviderFailure(
+      "video:" + provider,
+      {
+        kind: classification.kind,
+        reason: String(error?.message || error || "").slice(0, 1400),
+        cooldownMs: classification.cooldownMs,
+      }
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function markVideoProviderSuccess(env, provider) {
+  const stub = learningStub(env);
+  if (!stub) return null;
+  try {
+    return await stub.markProviderSuccess("video:" + provider);
+  } catch {
+    return null;
+  }
+}
+
 async function generateVideoFromPool({
   sourceImage,
   plan,
   quality,
   env,
 }) {
-  const providers = configuredVideoProviderOrder(
+  const configured = configuredVideoProviderOrder(
     env,
     Boolean(sourceImage)
   );
   const attempts = [];
 
-  if (!providers.length) {
+  if (!configured.length) {
     const error = new Error("Nenhum provedor de vídeo está configurado.");
     error.attempts = attempts;
     throw error;
   }
 
+  const health = await getVideoProviderHealth(env);
+  const now = Date.now();
+
+  const providers = configured.filter((provider) => {
+    const item = health["video:" + provider];
+    return !item || Number(item.cooldownUntil || 0) <= now;
+  });
+
+  for (const provider of configured) {
+    if (providers.includes(provider)) continue;
+    const item = health["video:" + provider] || {};
+    attempts.push({
+      provider,
+      model: "",
+      kind: item.kind || "cooldown",
+      skipped: true,
+      cooldownUntil: Number(item.cooldownUntil || 0),
+      error:
+        "Provider em cooldown até " +
+        new Date(Number(item.cooldownUntil || 0)).toISOString() +
+        (item.reason ? " — " + String(item.reason).slice(0, 700) : ""),
+    });
+  }
+
+  if (!providers.length) {
+    const error = new Error(
+      "Todos os provedores de vídeo configurados estão temporariamente em cooldown."
+    );
+    error.attempts = attempts;
+    error.providerCooldown = true;
+    throw error;
+  }
+
   for (const provider of providers) {
     try {
+      let result;
+
       if (provider === "wavespeed") {
-        const result = await generateWaveSpeedVideo({
+        result = await generateWaveSpeedVideo({
           sourceImage,
           plan,
           quality,
           env,
         });
-        result.attempts = attempts;
-        return result;
-      }
-
-      if (provider === "novita") {
-        const result = await generateNovitaTextVideo({
+      } else if (provider === "novita") {
+        result = await generateNovitaTextVideo({
           plan,
           quality,
           env,
         });
-        result.attempts = attempts;
-        return result;
-      }
-
-      if (provider === "huggingface") {
+      } else if (provider === "huggingface") {
         const client = new InferenceClient(env.HF_TOKEN);
-        const result = sourceImage
+        result = sourceImage
           ? await generateImageVideo(client, {
               sourceImage,
               plan,
@@ -2519,22 +2639,58 @@ async function generateVideoFromPool({
               quality,
               env,
             });
-        result.attempts = [
-          ...attempts,
-          ...(Array.isArray(result.attempts) ? result.attempts : []),
-        ];
-        return result;
       }
+
+      if (!result) {
+        throw new Error("Provider não retornou resultado.");
+      }
+
+      await markVideoProviderSuccess(env, provider);
+
+      result.attempts = [
+        ...attempts,
+        ...(Array.isArray(result.attempts) ? result.attempts : []),
+      ];
+      return result;
     } catch (error) {
+      const nested = Array.isArray(error?.attempts)
+        ? error.attempts
+            .map((item) =>
+              [
+                item?.model || "",
+                item?.error || "",
+              ].filter(Boolean).join(": ")
+            )
+            .join(" | ")
+        : "";
+
+      const combined = nested
+        ? new Error(
+            String(error?.message || error) +
+            " | " +
+            nested
+          )
+        : error;
+
+      const healthResult = await markVideoProviderFailure(
+        env,
+        provider,
+        combined
+      );
+      const classification = classifyVideoProviderFailure(combined);
+
       attempts.push({
         provider,
         model: "",
-        error: String(error?.message || error).slice(0, 1200),
+        kind: classification.kind,
+        skipped: false,
+        cooldownUntil: Number(healthResult?.cooldownUntil || 0),
+        error: String(combined?.message || combined).slice(0, 1200),
       });
     }
   }
 
-  const failure = new Error("Todos os provedores de vídeo configurados falharam.");
+  const failure = new Error("Todos os provedores de vídeo disponíveis falharam.");
   failure.attempts = attempts;
   throw failure;
 }
@@ -2785,6 +2941,8 @@ async function handleVideo(request, env) {
       .map(
         (attempt) =>
           [
+            attempt.provider || "",
+            attempt.kind || "",
             attempt.method || "",
             attempt.model || "",
             attempt.error || "",
@@ -2806,7 +2964,7 @@ async function handleVideo(request, env) {
         route: sourceImage
           ? "image-to-video"
           : "text-to-video",
-        provider: videoProviderName(env),
+        provider: "video-pool",
         model: attempts.map((x) => x.model).filter(Boolean).join(", "),
         latencyMs: Date.now() - startedAt,
         ok: false,
@@ -2821,7 +2979,7 @@ async function handleVideo(request, env) {
 
     await recordGlobalLearningOutcome(env, {
       kind: "video",
-      provider: videoProviderName(env),
+      provider: "video-pool",
       model: attempts.map((x) => x.model).filter(Boolean).join(", "),
       ok: false,
       retries: attempts.length,
