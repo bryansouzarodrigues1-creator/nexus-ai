@@ -145,6 +145,197 @@ async function setServerSummary(env, sessionId, summary) {
   } catch {}
 }
 
+function learningStub(env) {
+  if (!env.CONVERSATIONS) return null;
+  try {
+    return env.CONVERSATIONS.getByName("__nexus_global_learning_v1__");
+  } catch {
+    return null;
+  }
+}
+
+async function getLearningContext(env, taskType = "general") {
+  const stub = learningStub(env);
+  if (!stub) return { taskType, lessons: [], modelStats: [] };
+  try {
+    return await stub.getLearningContext(taskType);
+  } catch {
+    return { taskType, lessons: [], modelStats: [] };
+  }
+}
+
+function formatLearningContext(context) {
+  const lessons = Array.isArray(context?.lessons) ? context.lessons : [];
+  const stats = Array.isArray(context?.modelStats) ? context.modelStats : [];
+  if (!lessons.length && !stats.length) return "";
+
+  const parts = [];
+  if (lessons.length) {
+    parts.push(
+      "LIÇÕES APRENDIDAS DE INTERAÇÕES ANTERIORES:\n" +
+      lessons
+        .map((item, i) =>
+          (i + 1) + ". " +
+          (item?.trigger ? "Quando " + item.trigger + ": " : "") +
+          String(item?.guidance || "")
+        )
+        .join("\n")
+    );
+  }
+
+  if (stats.length) {
+    parts.push(
+      "DESEMPENHO HISTÓRICO DE MODELOS/PROVEDORES:\n" +
+      stats
+        .slice(0, 5)
+        .map((item) =>
+          [
+            item?.model || "modelo",
+            item?.provider || "provider",
+            "success=" + Math.round(Number(item?.successRate || 0) * 100) + "%",
+            item?.explicitApproval == null
+              ? ""
+              : "aprovação=" + Math.round(Number(item.explicitApproval) * 100) + "%",
+            "score=" + Math.round(Number(item?.avgScore || 0) * 100) + "%",
+          ].filter(Boolean).join(" · ")
+        )
+        .join("\n")
+    );
+  }
+
+  return parts.join("\n\n").slice(0, 9000);
+}
+
+async function recordGlobalLearningOutcome(env, outcome = {}) {
+  const stub = learningStub(env);
+  if (!stub) return;
+  try {
+    await stub.recordLearningOutcome(outcome);
+  } catch {}
+}
+
+async function extractFeedbackLesson(env, feedback = {}) {
+  if (!env.AI || !String(feedback.note || "").trim()) return null;
+
+  const attempt = await runTextChat(
+    [
+      {
+        role: "system",
+        content: [
+          "Você extrai lições reutilizáveis para melhorar a NEXUS AI.",
+          "Converta feedback do usuário em uma regra curta e generalizável.",
+          "Não preserve senhas, tokens, dados pessoais, nomes próprios desnecessários ou detalhes únicos sem valor geral.",
+          "Não transforme gosto momentâneo em regra universal.",
+          "Retorne SOMENTE JSON válido:",
+          "{shouldStore:boolean,taskType:'chat|agent|code|search|image|video|vision|file|general',trigger:string,guidance:string,confidence:number}.",
+          "confidence deve ficar entre 0 e 1.",
+          "Armazene apenas se a lição realmente puder melhorar tarefas futuras.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          "TIPO: " + String(feedback.kind || "general"),
+          "SINAL: " + String(feedback.signal || "neutral"),
+          feedback.prompt ? "PEDIDO ORIGINAL:\n" + String(feedback.prompt).slice(0, 4000) : "",
+          feedback.outputPreview ? "RESULTADO ANTERIOR:\n" + String(feedback.outputPreview).slice(0, 5000) : "",
+          "FEEDBACK:\n" + String(feedback.note || "").slice(0, 4000),
+        ].filter(Boolean).join("\n\n"),
+      },
+    ],
+    env,
+    {
+      cloudflareModel: CF_CODE_MODEL,
+      maxTokens: 650,
+      temperature: 0.05,
+      topP: 0.8,
+      sessionId: "learning-feedback",
+      cloudflareOnly: true,
+    }
+  );
+
+  if (!attempt?.ok) return null;
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
+  if (!parsed || parsed.shouldStore !== true) return null;
+
+  const confidence = Math.max(0, Math.min(1, Number(parsed.confidence || 0)));
+  if (confidence < 0.55) return null;
+
+  return {
+    taskType: String(parsed.taskType || feedback.kind || "general"),
+    trigger: String(parsed.trigger || "").slice(0, 2500),
+    guidance: String(parsed.guidance || "").slice(0, 4000),
+    confidence,
+    source: "explicit-feedback",
+    signal: String(feedback.signal || "neutral"),
+  };
+}
+
+async function handleFeedback(request, env) {
+  const body = await request.json();
+  const sessionId = String(body.sessionId || "").slice(0, 128);
+  const feedback = {
+    sessionId,
+    kind: String(body.kind || "general"),
+    signal: String(body.signal || "neutral"),
+    prompt: String(body.prompt || "").slice(0, 4000),
+    outputPreview: String(body.outputPreview || "").slice(0, 5000),
+    note: String(body.note || "").slice(0, 4000),
+    provider: String(body.provider || "").slice(0, 80),
+    model: String(body.model || "").slice(0, 180),
+    route: String(body.route || "").slice(0, 80),
+    score: body.score,
+    meta: body.meta && typeof body.meta === "object" ? body.meta : null,
+  };
+
+  if (!["positive", "negative", "neutral"].includes(feedback.signal)) {
+    return json({ error: "Sinal de feedback inválido." }, 400);
+  }
+
+  const stub = learningStub(env);
+  if (!stub) {
+    return json({ error: "Learning Store indisponível." }, 503);
+  }
+
+  const stored = await stub.recordFeedback(feedback);
+  const lesson = await extractFeedbackLesson(env, feedback);
+
+  if (lesson) {
+    try {
+      await stub.addLesson(lesson);
+    } catch {}
+  }
+
+  if (sessionId) {
+    await appendServerEvent(env, sessionId, {
+      type: "learning-feedback",
+      role: "user",
+      content: feedback.note || feedback.signal,
+      meta: {
+        kind: feedback.kind,
+        signal: feedback.signal,
+        model: feedback.model,
+        provider: feedback.provider,
+        lessonStored: Boolean(lesson),
+      },
+    });
+  }
+
+  return json({
+    ok: true,
+    feedbackId: stored?.id || null,
+    lessonStored: Boolean(lesson),
+    lesson: lesson
+      ? {
+          taskType: lesson.taskType,
+          trigger: lesson.trigger,
+          guidance: lesson.guidance,
+          confidence: lesson.confidence,
+        }
+      : null,
+  });
+}
+
 async function handleAgentStart(request, env) {
   if (!env.NEXUS_AGENT) {
     return json({ error: "Workflow de agente não configurado." }, 503);
@@ -295,6 +486,12 @@ async function handleStatus(env) {
       visualEditing: "edit-spec+reference+verification+best-of-two-retry",
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
+      learningLoop: {
+        persistent: Boolean(env.CONVERSATIONS),
+        explicitFeedback: true,
+        reusableLessons: true,
+        modelPerformanceMemory: true,
+      },
     },
     providers: {
       workersAI: Boolean(env.AI),
@@ -826,6 +1023,10 @@ async function buildVisualEditSpec({
 }) {
   if (!sourceDescription || !env.AI) return null;
 
+  const learnedContext = formatLearningContext(
+    await getLearningContext(env, "image")
+  );
+
   const attempt = await runTextChat(
     [
       {
@@ -848,7 +1049,8 @@ async function buildVisualEditSpec({
           sourceDescription +
           "\n\nPEDIDO ATUAL:\n" +
           prompt +
-          (previousPrompt ? "\n\nCONTEXTO VISUAL ANTERIOR:\n" + previousPrompt : ""),
+          (previousPrompt ? "\n\nCONTEXTO VISUAL ANTERIOR:\n" + previousPrompt : "") +
+          (learnedContext ? "\n\nLIÇÕES APRENDIDAS:\n" + learnedContext : ""),
       },
     ],
     env,
@@ -1123,6 +1325,16 @@ async function handleChat(request, env) {
   }
 
   const route = chooseChatRoute(message, mode, attachment);
+  const learningKind =
+    route.key === "code"
+      ? "code"
+      : route.key === "search"
+        ? "search"
+        : route.key === "vision"
+          ? "vision"
+          : "chat";
+  const learningContext = await getLearningContext(env, learningKind);
+  const learnedContextText = formatLearningContext(learningContext);
 
   const system = [
     "Você é NEXUS AI, um assistente geral de alta qualidade, direto, curioso e pouco propenso a recusas desnecessárias.",
@@ -1179,8 +1391,18 @@ async function handleChat(request, env) {
       }]
     : [];
 
+  const learningMessages = learnedContextText
+    ? [{
+        role: "system",
+        content:
+          "APRENDIZADO RECUPERADO. Use como heurística, nunca como fato absoluto; o pedido atual e evidências recentes vencem:\n" +
+          learnedContextText,
+      }]
+    : [];
+
   const buildMessages = (text) => [
     { role: "system", content: system },
+    ...learningMessages,
     ...memoryMessages,
     ...history,
     { role: "user", content: text },
@@ -1195,6 +1417,7 @@ async function handleChat(request, env) {
   ) {
     const visionMessages = [
       { role: "system", content: system },
+      ...learningMessages,
       ...memoryMessages,
       ...history,
       {
@@ -1386,6 +1609,14 @@ async function handleChat(request, env) {
       }),
     ]);
   }
+
+  await recordGlobalLearningOutcome(env, {
+    kind: learningKind,
+    provider: attempt.provider,
+    model: attempt.model,
+    ok: true,
+    latencyMs: Date.now() - startedAt,
+  });
 
   return json({
     answer,
@@ -1648,6 +1879,16 @@ async function handleImage(request, env) {
           ]);
         }
 
+        await recordGlobalLearningOutcome(env, {
+          kind: "image",
+          provider: "cloudflare",
+          model: best.generated.model,
+          ok: true,
+          score: best.verification?.score,
+          retries: best.retryCount,
+          latencyMs: Date.now() - startedAt,
+        });
+
         return new Response(best.generated.bytes, {
           headers: {
             "Content-Type": "image/jpeg",
@@ -1723,6 +1964,14 @@ async function handleImage(request, env) {
       });
     }
 
+    await recordGlobalLearningOutcome(env, {
+      kind: "image",
+      provider: "huggingface",
+      model,
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+    });
+
     return new Response(image, {
       headers: {
         "Content-Type": image.type || "image/png",
@@ -1770,6 +2019,10 @@ async function buildVideoPlan({
   sessionId,
   env,
 }) {
+  const learnedContext = formatLearningContext(
+    await getLearningContext(env, "video")
+  );
+
   const fallback = {
     prompt: String(prompt || "").trim(),
     negativePrompt:
@@ -1822,6 +2075,7 @@ async function buildVideoPlan({
             : "Não há imagem de referência.",
           "MODO DE QUALIDADE: " + quality,
           "PEDIDO:\n" + String(prompt || ""),
+          learnedContext ? "LIÇÕES APRENDIDAS:\n" + learnedContext : "",
         ].filter(Boolean).join("\n\n"),
       },
     ],
@@ -2110,6 +2364,15 @@ async function handleVideo(request, env) {
       ]);
     }
 
+    await recordGlobalLearningOutcome(env, {
+      kind: "video",
+      provider: generated.provider,
+      model: generated.model,
+      ok: true,
+      retries: generated.attempts?.length || 0,
+      latencyMs: Date.now() - startedAt,
+    });
+
     return new Response(generated.video, {
       headers: {
         "Content-Type": generated.video.type || "video/mp4",
@@ -2170,6 +2433,15 @@ async function handleVideo(request, env) {
         },
       });
     }
+
+    await recordGlobalLearningOutcome(env, {
+      kind: "video",
+      provider: videoProviderName(env),
+      model: attempts.map((x) => x.model).filter(Boolean).join(", "),
+      ok: false,
+      retries: attempts.length,
+      latencyMs: Date.now() - startedAt,
+    });
 
     return json(
       {
@@ -2269,6 +2541,9 @@ export default {
 
       if (url.pathname === "/api/memory" && request.method === "POST")
         return handleMemory(request, env);
+
+      if (url.pathname === "/api/feedback" && request.method === "POST")
+        return handleFeedback(request, env);
 
       if (url.pathname === "/api/agent/start" && request.method === "POST")
         return handleAgentStart(request, env);
