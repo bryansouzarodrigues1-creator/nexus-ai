@@ -214,6 +214,14 @@ async function recordGlobalLearningOutcome(env, outcome = {}) {
   } catch {}
 }
 
+async function addGlobalLearningLesson(env, lesson = {}) {
+  const stub = learningStub(env);
+  if (!stub) return;
+  try {
+    await stub.addLesson(lesson);
+  } catch {}
+}
+
 async function extractFeedbackLesson(env, feedback = {}) {
   if (!env.AI || !String(feedback.note || "").trim()) return null;
 
@@ -1889,6 +1897,40 @@ async function handleImage(request, env) {
           retries: best.retryCount,
           latencyMs: Date.now() - startedAt,
         });
+
+        if (
+          sourceImage &&
+          best.verification?.verified &&
+          Number(best.verification?.score || 1) < 0.72
+        ) {
+          const guidance = [
+            best.verification?.retryInstruction || "",
+            Array.isArray(best.verification?.issues)
+              ? best.verification.issues.join("; ")
+              : "",
+            Array.isArray(best.verification?.unwantedChanges)
+              ? "Evitar mudanças indesejadas: " +
+                best.verification.unwantedChanges.join("; ")
+              : "",
+          ].filter(Boolean).join(" ").slice(0, 3500);
+
+          if (guidance) {
+            await addGlobalLearningLesson(env, {
+              taskType: "image",
+              trigger:
+                "uma edição com imagem de referência exigir preservação forte",
+              guidance:
+                "Preserve tudo que não foi explicitamente pedido e corrija estes padrões de falha observados: " +
+                guidance,
+              confidence: Math.max(
+                0.58,
+                Math.min(0.92, 1 - Number(best.verification.score || 0.5))
+              ),
+              source: "visual-verifier",
+              signal: "negative",
+            });
+          }
+        }
 
         return new Response(best.generated.bytes, {
           headers: {
