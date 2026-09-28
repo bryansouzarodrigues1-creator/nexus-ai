@@ -1,4 +1,4 @@
-# NEXUS AI v2.0
+# NEXUS AI v2.1
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -190,15 +190,99 @@ Bindings nativos protegem a franquia:
 
 O frontend usa um UUID anônimo local apenas para controle de abuso.
 
-## Vídeo
+## Video Foundation V2.1
 
-Vídeo ainda é experimental e permanece separado.
+Vídeo continua experimental, mas agora possui um pipeline próprio.
 
-O fluxo atual usa Hugging Face para:
-- text-to-video;
-- image-to-video.
+### Text-to-video
 
-A V2 não ativa automaticamente serviços pagos de vídeo.
+Fluxo:
+
+```text
+pedido
+  ↓
+Video Planner
+  ↓
+prompt temporal + câmera + movimento + negative prompt
+  ↓
+router de modelos
+  ↓
+modelo rápido ou qualidade
+  ↓
+fallbacks controlados
+  ↓
+MP4
+```
+
+Modelos padrão:
+- rápido: `Lightricks/LTX-Video-0.9.8-13B-distilled`
+- qualidade: `tencent/HunyuanVideo`
+- fallback legado: `Wan-AI/Wan2.1-T2V-1.3B`
+
+O provider padrão é `auto`, podendo ser sobrescrito por `HF_VIDEO_PROVIDER`.
+
+### Image-to-video
+
+Quando existe imagem de referência:
+
+```text
+imagem
+  +
+pedido
+  ↓
+Video Planner
+  ↓
+image-text-to-video
+  ↓
+LTX-Video
+  ↓
+se indisponível
+  ↓
+image-to-video
+  ↓
+Wan I2V
+```
+
+Modelos padrão:
+- principal: `Lightricks/LTX-Video`
+- fallback: `Wan-AI/Wan2.1-I2V-14B-720P`
+
+Regra importante: se todos os modelos condicionados pela imagem falharem, a NEXUS retorna erro.
+
+Ela NÃO cai para text-to-video, porque isso perderia a referência e poderia gerar uma cena totalmente diferente.
+
+### Qualidade
+
+Pedidos normais usam modo `fast`.
+
+Termos como "máxima qualidade", "cinematográfico" ou "melhor qualidade" ativam `quality`.
+
+O Video Planner controla de forma conservadora:
+- movimento;
+- câmera;
+- negative prompt;
+- número de frames;
+- guidance;
+- passos de inferência.
+
+### Observabilidade de vídeo
+
+A NEXUS registra:
+- modelo;
+- provider;
+- rota text-to-video/image-to-video;
+- latência;
+- qualidade;
+- quantidade de fallbacks;
+- falhas por modelo.
+
+A UI mostra quando o Video Planner foi usado e se houve fallback.
+
+### Custos
+
+A V2.1 não ativa automaticamente nenhum serviço pago.
+
+Vídeo depende de infraestrutura GPU externa disponível através do provedor configurado. Se a cota/crédito acabar, a NEXUS informa isso sem prejudicar chat, imagem, visão, documentos ou agente.
 
 ## Endpoints
 
@@ -229,6 +313,7 @@ Itens planejados, mas que não devem ser confundidos com recursos atuais:
 - streaming token a token;
 - provider self-hosted com vLLM;
 - pipeline profissional de video-to-video;
+- verificação automática frame-a-frame de vídeo;
 - geração de vídeo gratuita confiável e ilimitada.
 
 ## Segurança de credenciais
