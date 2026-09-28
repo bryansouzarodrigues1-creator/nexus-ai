@@ -1,14 +1,10 @@
 import { InferenceClient } from "@huggingface/inference";
-import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
 export { ConversationState } from "./conversation-state.js";
 export { NexusAgentWorkflow } from "./agent-workflow.js";
-import { NexusConversationState } from "./state.js";
-import { NexusReasoningWorkflow } from "./reasoning-workflow.js";
 
-export { NexusConversationState, NexusReasoningWorkflow };
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "1.3.0";
+const VERSION = "2.0.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
