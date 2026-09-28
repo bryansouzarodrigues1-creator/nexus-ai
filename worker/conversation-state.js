@@ -3,9 +3,85 @@ import { DurableObject } from "cloudflare:workers";
 const MAX_EVENTS = 120;
 const MAX_TASKS = 40;
 const MAX_METRICS = 200;
+const MAX_FEEDBACK = 240;
+const MAX_LESSONS = 160;
+const MAX_MODEL_STATS = 140;
 
 function cleanText(value, max = 12000) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+function cleanLearningKind(value) {
+  const kind = cleanText(value || "general", 40).toLowerCase();
+  return /^(chat|agent|code|search|image|video|vision|file|general)$/.test(kind)
+    ? kind
+    : "general";
+}
+
+function cleanSignal(value) {
+  const signal = cleanText(value || "neutral", 20).toLowerCase();
+  return /^(positive|negative|neutral)$/.test(signal) ? signal : "neutral";
+}
+
+function cleanSerializableObject(value, fallback = null) {
+  if (!value || typeof value !== "object") return fallback;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return fallback;
+  }
+}
+
+function modelStatKey(kind, provider, model) {
+  return [
+    cleanLearningKind(kind),
+    cleanText(provider || "unknown", 80),
+    cleanText(model || "unknown", 180),
+  ].join("::");
+}
+
+function updateModelStats(stats, item = {}) {
+  const next = stats && typeof stats === "object" ? { ...stats } : {};
+  const kind = cleanLearningKind(item.kind);
+  const provider = cleanText(item.provider || "unknown", 80);
+  const model = cleanText(item.model || "unknown", 180);
+  const key = modelStatKey(kind, provider, model);
+  const current = next[key] && typeof next[key] === "object" ? next[key] : {};
+
+  const score = Number(item.score);
+  const hasScore = Number.isFinite(score);
+  const scoreCount = Number(current.scoreCount || 0);
+  const oldAvg = Number(current.avgScore || 0);
+  const newScoreCount = scoreCount + (hasScore ? 1 : 0);
+  const avgScore = hasScore
+    ? ((oldAvg * scoreCount) + Math.max(0, Math.min(1, score))) / newScoreCount
+    : oldAvg;
+
+  const signal = cleanSignal(item.signal);
+  const count = Number(current.count || 0) + 1;
+
+  next[key] = {
+    key,
+    kind,
+    provider,
+    model,
+    count,
+    success: Number(current.success || 0) + (item.ok === false ? 0 : 1),
+    failure: Number(current.failure || 0) + (item.ok === false ? 1 : 0),
+    positive: Number(current.positive || 0) + (signal === "positive" ? 1 : 0),
+    negative: Number(current.negative || 0) + (signal === "negative" ? 1 : 0),
+    retries: Number(current.retries || 0) + Math.max(0, Number(item.retries || 0)),
+    avgScore,
+    scoreCount: newScoreCount,
+    lastLatencyMs: Math.max(0, Number(item.latencyMs || 0)),
+    updatedAt: Date.now(),
+  };
+
+  return Object.fromEntries(
+    Object.entries(next)
+      .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))
+      .slice(0, MAX_MODEL_STATS)
+  );
 }
 
 function cleanEvent(event = {}) {
@@ -28,12 +104,15 @@ export class ConversationState extends DurableObject {
   }
 
   async getSnapshot() {
-    const [summary, events, tasks, metrics, profile] = await Promise.all([
+    const [summary, events, tasks, metrics, profile, feedback, lessons, modelStats] = await Promise.all([
       this.ctx.storage.get("summary"),
       this.ctx.storage.get("events"),
       this.ctx.storage.get("tasks"),
       this.ctx.storage.get("metrics"),
       this.ctx.storage.get("profile"),
+      this.ctx.storage.get("feedback"),
+      this.ctx.storage.get("lessons"),
+      this.ctx.storage.get("modelStats"),
     ]);
 
     return {
@@ -42,6 +121,9 @@ export class ConversationState extends DurableObject {
       tasks: tasks && typeof tasks === "object" ? tasks : {},
       metrics: Array.isArray(metrics) ? metrics : [],
       profile: profile && typeof profile === "object" ? profile : {},
+      feedback: Array.isArray(feedback) ? feedback : [],
+      lessons: Array.isArray(lessons) ? lessons : [],
+      modelStats: modelStats && typeof modelStats === "object" ? modelStats : {},
     };
   }
 
@@ -123,6 +205,170 @@ export class ConversationState extends DurableObject {
     ].slice(-MAX_METRICS);
 
     await this.ctx.storage.put("metrics", next);
+    return { ok: true };
+  }
+
+  async recordLearningOutcome(outcome = {}) {
+    const modelStats = (await this.ctx.storage.get("modelStats")) || {};
+    const nextStats = updateModelStats(modelStats, {
+      kind: outcome.kind || outcome.type || "general",
+      provider: outcome.provider,
+      model: outcome.model,
+      ok: outcome.ok,
+      score: outcome.score,
+      retries: outcome.retries,
+      latencyMs: outcome.latencyMs,
+      signal: "neutral",
+    });
+    await this.ctx.storage.put("modelStats", nextStats);
+    return { ok: true };
+  }
+
+  async recordFeedback(feedback = {}) {
+    const items = (await this.ctx.storage.get("feedback")) || [];
+    const item = {
+      id: cleanText(feedback.id || crypto.randomUUID(), 120),
+      at: Date.now(),
+      sessionId: cleanText(feedback.sessionId || "", 128),
+      kind: cleanLearningKind(feedback.kind),
+      signal: cleanSignal(feedback.signal),
+      prompt: cleanText(feedback.prompt || "", 4000),
+      outputPreview: cleanText(feedback.outputPreview || "", 5000),
+      note: cleanText(feedback.note || "", 4000),
+      provider: cleanText(feedback.provider || "", 80),
+      model: cleanText(feedback.model || "", 180),
+      route: cleanText(feedback.route || "", 80),
+      score: Number.isFinite(Number(feedback.score))
+        ? Math.max(0, Math.min(1, Number(feedback.score)))
+        : null,
+      meta: cleanSerializableObject(feedback.meta, null),
+    };
+
+    const nextFeedback = [...items, item].slice(-MAX_FEEDBACK);
+    const modelStats = (await this.ctx.storage.get("modelStats")) || {};
+    const nextStats = updateModelStats(modelStats, {
+      kind: item.kind,
+      provider: item.provider,
+      model: item.model,
+      ok: item.signal !== "negative",
+      score: item.score,
+      retries: item.meta?.retries || 0,
+      signal: item.signal,
+    });
+
+    await Promise.all([
+      this.ctx.storage.put("feedback", nextFeedback),
+      this.ctx.storage.put("modelStats", nextStats),
+    ]);
+
+    return item;
+  }
+
+  async addLesson(lesson = {}) {
+    const guidance = cleanText(lesson.guidance || "", 4000);
+    if (!guidance) return { ok: false, reason: "empty-guidance" };
+
+    const lessons = (await this.ctx.storage.get("lessons")) || [];
+    const normalized = guidance.toLowerCase().replace(/\s+/g, " ").trim();
+
+    const withoutDuplicate = lessons.filter((item) => {
+      const existing = cleanText(item?.guidance || "", 4000)
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+      return existing !== normalized;
+    });
+
+    const item = {
+      id: cleanText(lesson.id || crypto.randomUUID(), 120),
+      at: Date.now(),
+      taskType: cleanLearningKind(lesson.taskType),
+      trigger: cleanText(lesson.trigger || "", 2500),
+      guidance,
+      confidence: Math.max(
+        0,
+        Math.min(1, Number.isFinite(Number(lesson.confidence))
+          ? Number(lesson.confidence)
+          : 0.7)
+      ),
+      source: cleanText(lesson.source || "feedback", 40),
+      signal: cleanSignal(lesson.signal),
+    };
+
+    const next = [...withoutDuplicate, item].slice(-MAX_LESSONS);
+    await this.ctx.storage.put("lessons", next);
+    return { ok: true, lesson: item };
+  }
+
+  async getLearningContext(taskType = "general") {
+    const kind = cleanLearningKind(taskType);
+    const [lessons, modelStats] = await Promise.all([
+      this.ctx.storage.get("lessons"),
+      this.ctx.storage.get("modelStats"),
+    ]);
+
+    const relevantLessons = (Array.isArray(lessons) ? lessons : [])
+      .filter((item) => item?.taskType === kind || item?.taskType === "general")
+      .sort((a, b) => {
+        const confidenceDiff =
+          Number(b?.confidence || 0) - Number(a?.confidence || 0);
+        return confidenceDiff || Number(b?.at || 0) - Number(a?.at || 0);
+      })
+      .slice(0, 8)
+      .map((item) => ({
+        taskType: item.taskType,
+        trigger: item.trigger,
+        guidance: item.guidance,
+        confidence: item.confidence,
+        signal: item.signal,
+      }));
+
+    const relevantStats = Object.values(
+      modelStats && typeof modelStats === "object" ? modelStats : {}
+    )
+      .filter((item) => item?.kind === kind || item?.kind === "general")
+      .map((item) => {
+        const positive = Number(item?.positive || 0);
+        const negative = Number(item?.negative || 0);
+        const explicitTotal = positive + negative;
+        return {
+          kind: item.kind,
+          provider: item.provider,
+          model: item.model,
+          count: Number(item.count || 0),
+          successRate:
+            Number(item.count || 0) > 0
+              ? Number(item.success || 0) / Number(item.count || 1)
+              : 0,
+          explicitApproval:
+            explicitTotal > 0 ? positive / explicitTotal : null,
+          avgScore: Number(item.avgScore || 0),
+          retries: Number(item.retries || 0),
+          updatedAt: Number(item.updatedAt || 0),
+        };
+      })
+      .sort((a, b) => {
+        const aApproval = a.explicitApproval == null ? 0.5 : a.explicitApproval;
+        const bApproval = b.explicitApproval == null ? 0.5 : b.explicitApproval;
+        const aRank = aApproval * 0.5 + a.avgScore * 0.3 + a.successRate * 0.2;
+        const bRank = bApproval * 0.5 + b.avgScore * 0.3 + b.successRate * 0.2;
+        return bRank - aRank || b.updatedAt - a.updatedAt;
+      })
+      .slice(0, 8);
+
+    return {
+      taskType: kind,
+      lessons: relevantLessons,
+      modelStats: relevantStats,
+    };
+  }
+
+  async clearLearning() {
+    await Promise.all([
+      this.ctx.storage.delete("feedback"),
+      this.ctx.storage.delete("lessons"),
+      this.ctx.storage.delete("modelStats"),
+    ]);
     return { ok: true };
   }
 
