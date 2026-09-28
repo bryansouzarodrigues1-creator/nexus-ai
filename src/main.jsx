@@ -471,6 +471,10 @@ function App(){
         const provider=res.headers.get('x-nexus-provider')||'';
         const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
         const promptModel=res.headers.get('x-nexus-prompt-model')||'';
+        const visualVerified=res.headers.get('x-nexus-visual-verified')==='1';
+        const visualScoreRaw=res.headers.get('x-nexus-visual-score');
+        const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
+        const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
 
         const content=imageMode==='edit'
           ?'Imagem editada mantendo a referência.'
@@ -486,6 +490,9 @@ function App(){
           provider,
           promptExpanded,
           promptModel,
+          visualVerified,
+          visualScore,
+          visualRetry,
           generationMode:imageMode
         });
       }else if(requestMode==='video'){
@@ -723,7 +730,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{typeof m.verificationScore==='number'?' · verificação '+Math.round(m.verificationScore*100)+'%':''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{typeof m.verificationScore==='number'?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{typeof m.visualScore==='number'?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
