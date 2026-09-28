@@ -23,6 +23,21 @@ function cleanSignal(value) {
   return /^(positive|negative|neutral)$/.test(signal) ? signal : "neutral";
 }
 
+function cleanFailureKind(value) {
+  const kind = cleanText(value || "", 40).toLowerCase();
+  return /^(quota|rate-limit|auth|compatibility|transient|timeout|unavailable|provider|bad-response|quality|unknown)$/.test(kind)
+    ? kind
+    : kind
+      ? "unknown"
+      : "";
+}
+
+function isOperationalFailureKind(value) {
+  return /^(quota|rate-limit|auth|compatibility|transient|timeout|unavailable|provider|bad-response)$/.test(
+    cleanFailureKind(value)
+  );
+}
+
 function cleanSerializableObject(value, fallback = null) {
   if (!value || typeof value !== "object") return fallback;
   try {
@@ -48,17 +63,50 @@ function updateModelStats(stats, item = {}) {
   const key = modelStatKey(kind, provider, model);
   const current = next[key] && typeof next[key] === "object" ? next[key] : {};
 
+  const eventType =
+    cleanText(item.eventType || "outcome", 20).toLowerCase() === "feedback"
+      ? "feedback"
+      : "outcome";
+  const failureKind = cleanFailureKind(item.failureKind);
+  const operationalFailure =
+    eventType === "outcome" &&
+    item.ok === false &&
+    isOperationalFailureKind(failureKind);
+  const qualityFailure =
+    (eventType === "outcome" &&
+      item.ok === false &&
+      !operationalFailure) ||
+    (eventType === "feedback" && cleanSignal(item.signal) === "negative");
+
   const score = Number(item.score);
   const hasScore = Number.isFinite(score);
   const scoreCount = Number(current.scoreCount || 0);
-  const oldAvg = Number(current.avgScore || 0);
+  const oldAvgScore = Number(current.avgScore || 0);
   const newScoreCount = scoreCount + (hasScore ? 1 : 0);
   const avgScore = hasScore
-    ? ((oldAvg * scoreCount) + Math.max(0, Math.min(1, score))) / newScoreCount
-    : oldAvg;
+    ? ((oldAvgScore * scoreCount) + Math.max(0, Math.min(1, score))) /
+      newScoreCount
+    : oldAvgScore;
+
+  const latencyMs = Math.max(0, Number(item.latencyMs || 0));
+  const hasLatency = eventType === "outcome" && latencyMs > 0;
+  const latencyCount = Number(current.latencyCount || 0);
+  const oldAvgLatency = Number(
+    current.avgLatencyMs ||
+    current.lastLatencyMs ||
+    0
+  );
+  const newLatencyCount = latencyCount + (hasLatency ? 1 : 0);
+  const avgLatencyMs = hasLatency
+    ? ((oldAvgLatency * latencyCount) + latencyMs) /
+      Math.max(1, newLatencyCount)
+    : oldAvgLatency;
 
   const signal = cleanSignal(item.signal);
   const count = Number(current.count || 0) + 1;
+  const outcomeCount =
+    Number(current.outcomeCount ?? current.count ?? 0) +
+    (eventType === "outcome" ? 1 : 0);
 
   next[key] = {
     key,
@@ -66,14 +114,37 @@ function updateModelStats(stats, item = {}) {
     provider,
     model,
     count,
-    success: Number(current.success || 0) + (item.ok === false ? 0 : 1),
-    failure: Number(current.failure || 0) + (item.ok === false ? 1 : 0),
-    positive: Number(current.positive || 0) + (signal === "positive" ? 1 : 0),
-    negative: Number(current.negative || 0) + (signal === "negative" ? 1 : 0),
-    retries: Number(current.retries || 0) + Math.max(0, Number(item.retries || 0)),
+    outcomeCount,
+    success:
+      Number(current.success || 0) +
+      (eventType === "outcome" && item.ok !== false ? 1 : 0),
+    failure:
+      Number(current.failure || 0) +
+      (eventType === "outcome" && item.ok === false ? 1 : 0),
+    operationalFailures:
+      Number(current.operationalFailures || 0) +
+      (operationalFailure ? 1 : 0),
+    qualityFailures:
+      Number(current.qualityFailures || 0) +
+      (qualityFailure ? 1 : 0),
+    positive:
+      Number(current.positive || 0) +
+      (signal === "positive" ? 1 : 0),
+    negative:
+      Number(current.negative || 0) +
+      (signal === "negative" ? 1 : 0),
+    retries:
+      Number(current.retries || 0) +
+      Math.max(0, Number(item.retries || 0)),
     avgScore,
     scoreCount: newScoreCount,
-    lastLatencyMs: Math.max(0, Number(item.latencyMs || 0)),
+    avgLatencyMs,
+    latencyCount: newLatencyCount,
+    lastLatencyMs: latencyMs || Number(current.lastLatencyMs || 0),
+    lastFailureKind:
+      item.ok === false && eventType === "outcome"
+        ? failureKind || "unknown"
+        : cleanText(current.lastFailureKind || "", 40),
     updatedAt: Date.now(),
   };
 
@@ -223,6 +294,8 @@ export class ConversationState extends DurableObject {
       score: outcome.score,
       retries: outcome.retries,
       latencyMs: outcome.latencyMs,
+      failureKind: outcome.failureKind,
+      eventType: "outcome",
       signal: "neutral",
     });
     await this.ctx.storage.put("modelStats", nextStats);
@@ -258,6 +331,8 @@ export class ConversationState extends DurableObject {
       ok: item.signal !== "negative",
       score: item.score,
       retries: item.meta?.retries || 0,
+      failureKind: item.signal === "negative" ? "quality" : "",
+      eventType: "feedback",
       signal: item.signal,
     });
 
@@ -341,14 +416,35 @@ export class ConversationState extends DurableObject {
           provider: item.provider,
           model: item.model,
           count: Number(item.count || 0),
+          outcomeCount: Number(item.outcomeCount ?? item.count ?? 0),
+          success: Number(item.success || 0),
+          failure: Number(item.failure || 0),
+          operationalFailures: Number(item.operationalFailures || 0),
+          qualityFailures: Number(item.qualityFailures || 0),
+          positive,
+          negative,
           successRate:
-            Number(item.count || 0) > 0
-              ? Number(item.success || 0) / Number(item.count || 1)
+            Number(item.outcomeCount ?? item.count ?? 0) > 0
+              ? Number(item.success || 0) /
+                Math.max(1, Number(item.outcomeCount ?? item.count ?? 0))
               : 0,
+          reliabilityRate:
+            Number(item.success || 0) + Number(item.operationalFailures || 0) > 0
+              ? Number(item.success || 0) /
+                Math.max(
+                  1,
+                  Number(item.success || 0) +
+                  Number(item.operationalFailures || 0)
+                )
+              : null,
           explicitApproval:
             explicitTotal > 0 ? positive / explicitTotal : null,
           avgScore: Number(item.avgScore || 0),
+          scoreCount: Number(item.scoreCount || 0),
+          avgLatencyMs: Number(item.avgLatencyMs || item.lastLatencyMs || 0),
+          latencyCount: Number(item.latencyCount || 0),
           retries: Number(item.retries || 0),
+          lastFailureKind: cleanText(item.lastFailureKind || "", 40),
           updatedAt: Number(item.updatedAt || 0),
         };
       })
