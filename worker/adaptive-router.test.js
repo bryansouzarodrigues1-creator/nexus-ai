@@ -94,6 +94,36 @@ function candidate(model, baseScore, costTier = 0) {
   );
 
   assert.equal(decision.selected.model, "general");
+  assert.equal(decision.adaptive, false);
+}
+
+{
+  const stats = [
+    {
+      model: "alternate",
+      provider: "cloudflare",
+      outcomeCount: 1,
+      success: 1,
+      operationalFailures: 0,
+      positive: 1,
+      negative: 0,
+      scoreCount: 1,
+      avgScore: 1,
+      avgLatencyMs: 500,
+    },
+  ];
+
+  const decision = rankAdaptiveCandidates(
+    [
+      candidate("general", 0.74, 0),
+      candidate("alternate", 0.73, 0),
+    ],
+    stats,
+    { minimumEvidenceToOverride: 6 }
+  );
+
+  assert.equal(decision.selected.model, "general");
+  assert.equal(decision.adaptive, false);
   assert.equal(
     decision.reason,
     "insufficient-evidence-to-override"
