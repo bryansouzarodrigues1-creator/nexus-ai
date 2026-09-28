@@ -119,7 +119,10 @@ function candidate(model, baseScore, costTier = 0) {
       candidate("alternate", 0.73, 0),
     ],
     stats,
-    { minimumEvidenceToOverride: 6 }
+    {
+      minimumEvidenceToOverride: 6,
+      explorationWeight: 0,
+    }
   );
 
   assert.equal(decision.selected.model, "general");
