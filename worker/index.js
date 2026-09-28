@@ -1,4 +1,6 @@
 import { InferenceClient } from "@huggingface/inference";
+export { ConversationState } from "./conversation-state.js";
+export { NexusAgentWorkflow } from "./agent-workflow.js";
 import { NexusConversationState } from "./state.js";
 import { NexusReasoningWorkflow } from "./reasoning-workflow.js";
 
@@ -100,6 +102,147 @@ function parseProviderError(raw) {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 1200);
+  }
+}
+
+function conversationStub(env, sessionId) {
+  if (!env.CONVERSATIONS || !sessionId) return null;
+  try {
+    return env.CONVERSATIONS.getByName(String(sessionId).slice(0, 128));
+  } catch {
+    return null;
+  }
+}
+
+async function getServerConversation(env, sessionId) {
+  const stub = conversationStub(env, sessionId);
+  if (!stub) return null;
+  try {
+    return await stub.getSnapshot();
+  } catch {
+    return null;
+  }
+}
+
+async function appendServerEvent(env, sessionId, event) {
+  const stub = conversationStub(env, sessionId);
+  if (!stub) return;
+  try {
+    await stub.appendEvent(event);
+  } catch {}
+}
+
+async function recordServerMetric(env, sessionId, metric) {
+  const stub = conversationStub(env, sessionId);
+  if (!stub) return;
+  try {
+    await stub.recordMetric(metric);
+  } catch {}
+}
+
+async function setServerSummary(env, sessionId, summary) {
+  const stub = conversationStub(env, sessionId);
+  if (!stub) return;
+  try {
+    await stub.setSummary(summary);
+  } catch {}
+}
+
+async function handleAgentStart(request, env) {
+  if (!env.NEXUS_AGENT) {
+    return json({ error: "Workflow de agente não configurado." }, 503);
+  }
+
+  const body = await request.json();
+  const message = String(body.message || "").trim();
+  const sessionId = String(body.sessionId || "").trim().slice(0, 128);
+  const history = cleanHistory(body.history);
+  const memorySummary = String(body.memorySummary || "").trim().slice(0, 16000);
+
+  if (!message) return json({ error: "Mensagem vazia." }, 400);
+  if (!sessionId) return json({ error: "sessionId obrigatório." }, 400);
+
+  const serverState = await getServerConversation(env, sessionId);
+  const effectiveSummary =
+    String(serverState?.summary || "").trim() || memorySummary;
+
+  const taskId = crypto.randomUUID();
+
+  try {
+    const instance = await env.NEXUS_AGENT.create({
+      id: taskId,
+      params: {
+        taskId,
+        sessionId,
+        message,
+        history,
+        memorySummary: effectiveSummary,
+      },
+      retention: {
+        successRetention: "1 day",
+        errorRetention: "3 days",
+      },
+    });
+
+    const stub = conversationStub(env, sessionId);
+    if (stub) {
+      try {
+        await stub.setTask(taskId, {
+          status: "queued",
+          message: message.slice(0, 1000),
+          createdAt: Date.now(),
+        });
+        await stub.appendEvent({
+          type: "agent-request",
+          role: "user",
+          content: message,
+          meta: { taskId },
+        });
+      } catch {}
+    }
+
+    return json({
+      id: instance.id,
+      status: "queued",
+      route: "agent",
+    }, 202);
+  } catch (error) {
+    return json(
+      {
+        error: "Não consegui iniciar o agente.",
+        provider_error: error?.message || String(error),
+      },
+      502
+    );
+  }
+}
+
+async function handleAgentStatus(id, env) {
+  if (!env.NEXUS_AGENT) {
+    return json({ error: "Workflow de agente não configurado." }, 503);
+  }
+
+  const taskId = String(id || "").trim().slice(0, 100);
+  if (!taskId) return json({ error: "ID inválido." }, 400);
+
+  try {
+    const instance = await env.NEXUS_AGENT.get(taskId);
+    const details = await instance.status();
+    return json({
+      id: instance.id,
+      status: details.status,
+      output: details.output || null,
+      error: details.error || null,
+      rollback: details.rollback || null,
+    });
+  } catch (error) {
+    return json(
+      {
+        error: "Workflow não encontrado ou indisponível.",
+        provider_error: error?.message || String(error),
+      },
+      404
+    );
   }
 }
 
@@ -233,6 +376,8 @@ async function handleStatus(env) {
       image: Boolean(env.AI || env.HF_TOKEN),
       imageEdit: Boolean(env.AI || env.HF_TOKEN),
       video: Boolean(env.HF_TOKEN),
+      durableState: Boolean(env.CONVERSATIONS),
+      agentWorkflow: Boolean(env.NEXUS_AGENT),
       durableState: Boolean(env.CONVERSATION_STATE),
       workflows: Boolean(env.NEXUS_REASONING),
     },
@@ -783,6 +928,15 @@ async function handleChat(request, env) {
   if (!env.AI && !env.HF_TOKEN)
     return json({ error: "Nenhum provedor de IA está configurado." }, 503);
 
+  if (sessionId) {
+    await appendServerEvent(env, sessionId, {
+      type: "chat-request",
+      role: "user",
+      content: message,
+      meta: { mode },
+    });
+  }
+
   const route = chooseChatRoute(message, mode, attachment);
 
   if (
@@ -1080,6 +1234,29 @@ async function handleChat(request, env) {
     });
   }
 
+  if (sessionId) {
+    await Promise.all([
+      appendServerEvent(env, sessionId, {
+        type: "chat-response",
+        role: "assistant",
+        content: answer,
+        meta: {
+          route: route.key,
+          model: attempt.model,
+          provider: attempt.provider,
+        },
+      }),
+      recordServerMetric(env, sessionId, {
+        type: "chat",
+        route: route.key,
+        provider: attempt.provider,
+        model: attempt.model,
+        latencyMs: Date.now() - startedAt,
+        ok: true,
+      }),
+    ]);
+  }
+
   return json({
     answer,
     model: attempt.model,
@@ -1089,6 +1266,7 @@ async function handleChat(request, env) {
     sources: nativeSources.length ? nativeSources : fallbackSources,
     usage: data?.usage || null,
     documentContext: documentContext || null,
+    stateSource: serverState?.summary ? "durable-object" : "client",
   });
 }
 
@@ -1396,7 +1574,11 @@ async function handleVideo(request, env) {
 }
 
 async function enforceRateLimit(request, env, pathname) {
-  if (!pathname.startsWith("/api/") || pathname === "/api/status") {
+  if (
+    !pathname.startsWith("/api/") ||
+    pathname === "/api/status" ||
+    (request.method === "GET" && pathname.startsWith("/api/agent/"))
+  ) {
     return null;
   }
 
@@ -1465,6 +1647,12 @@ export default {
 
       if (url.pathname === "/api/memory" && request.method === "POST")
         return handleMemory(request, env);
+
+      if (url.pathname === "/api/agent/start" && request.method === "POST")
+        return handleAgentStart(request, env);
+
+      if (url.pathname.startsWith("/api/agent/") && request.method === "GET")
+        return handleAgentStatus(url.pathname.split("/").pop(), env);
 
       if (url.pathname === "/api/image" && request.method === "POST")
         return handleImage(request, env);
