@@ -291,7 +291,10 @@ async function handleStatus(env) {
     architecture: {
       durableConversationState: Boolean(env.CONVERSATIONS),
       agentWorkflow: Boolean(env.NEXUS_AGENT),
-      orchestration: "router+durable-state+planner-solver-verifier",
+      orchestration: "router+durable-state+planner-solver-critic-verifier",
+      visualEditing: "edit-spec+reference+verification+best-of-two-retry",
+      toolRegistry: ["web_search", "calculator", "conversation_context"],
+      fakeToolsAllowed: false,
     },
     providers: {
       workersAI: Boolean(env.AI),
