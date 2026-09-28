@@ -4,7 +4,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -322,8 +322,21 @@ async function handleStatus(env) {
       imageFallback: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
       imageEditFallback:
         env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev",
-      video: env.HF_VIDEO_MODEL || "Wan-AI/Wan2.1-T2V-1.3B",
-      imageVideo: env.HF_IMAGE_VIDEO_MODEL || "Lightricks/LTX-Video",
+      videoFast:
+        env.HF_VIDEO_MODEL_FAST ||
+        "Lightricks/LTX-Video-0.9.8-13B-distilled",
+      videoQuality:
+        env.HF_VIDEO_MODEL_QUALITY ||
+        "tencent/HunyuanVideo",
+      videoFallback:
+        env.HF_VIDEO_MODEL ||
+        "Wan-AI/Wan2.1-T2V-1.3B",
+      imageVideo:
+        env.HF_IMAGE_VIDEO_MODEL ||
+        "Lightricks/LTX-Video",
+      imageVideoFallback:
+        env.HF_IMAGE_VIDEO_FALLBACK_MODEL ||
+        "Wan-AI/Wan2.1-I2V-14B-720P",
     },
   });
 }
@@ -1747,6 +1760,304 @@ async function handleImage(request, env) {
   }
 }
 
+
+function clampVideoNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+async function buildVideoPlan({
+  prompt,
+  history,
+  previousPrompt,
+  hasSourceImage,
+  quality,
+  sessionId,
+  env,
+}) {
+  const fallback = {
+    prompt: String(prompt || "").trim(),
+    negativePrompt:
+      "identity drift, subject replacement, scene replacement, extra limbs, warped anatomy, flicker, random text, unwanted objects",
+    motion:
+      hasSourceImage
+        ? "Preserve the same subject and scene; animate only the requested motion."
+        : "Natural coherent motion.",
+    camera: "Stable cinematic camera unless the user requests another movement.",
+    numFrames: quality === "quality" ? 81 : 49,
+    guidanceScale: hasSourceImage ? 4.5 : 5,
+    inferenceSteps: quality === "quality" ? 30 : 20,
+    planned: false,
+    model: null,
+  };
+
+  if (!env.AI) return fallback;
+
+  const attempt = await runTextChat(
+    [
+      {
+        role: "system",
+        content: [
+          "Você é o Video Planner da NEXUS AI.",
+          "Transforme o pedido em uma especificação temporal curta e precisa para um modelo de geração de vídeo.",
+          "Preserve rigorosamente identidade, roupa, objeto, composição e cenário quando houver imagem de referência.",
+          "Não invente personagens, objetos ou mudanças de cena não solicitadas.",
+          "Prefira movimento fisicamente coerente e câmera estável.",
+          "Retorne SOMENTE JSON válido no schema:",
+          "{prompt:string,negativePrompt:string,motion:string,camera:string,numFrames:number,guidanceScale:number,inferenceSteps:number}.",
+          "numFrames deve ficar entre 25 e 97.",
+          "guidanceScale entre 2 e 8.",
+          "inferenceSteps entre 12 e 40.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          previousPrompt ? "CONTEXTO VISUAL ANTERIOR:\n" + previousPrompt : "",
+          history?.length
+            ? "HISTÓRICO RECENTE:\n" +
+              history
+                .slice(-8)
+                .map((m) => m.role.toUpperCase() + ": " + m.content)
+                .join("\n\n")
+            : "",
+          hasSourceImage
+            ? "HÁ UMA IMAGEM DE REFERÊNCIA. Ela é a autoridade visual absoluta."
+            : "Não há imagem de referência.",
+          "MODO DE QUALIDADE: " + quality,
+          "PEDIDO:\n" + String(prompt || ""),
+        ].filter(Boolean).join("\n\n"),
+      },
+    ],
+    env,
+    {
+      cloudflareModel: CF_CODE_MODEL,
+      maxTokens: 800,
+      temperature: 0.08,
+      topP: 0.82,
+      sessionId: sessionId ? sessionId + "-video-plan" : "",
+      cloudflareOnly: true,
+    }
+  );
+
+  if (!attempt?.ok) return fallback;
+
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
+  if (!parsed) return fallback;
+
+  const plannedPrompt = [
+    String(parsed.prompt || prompt || "").trim(),
+    parsed.motion ? "Motion: " + String(parsed.motion).trim() : "",
+    parsed.camera ? "Camera: " + String(parsed.camera).trim() : "",
+    hasSourceImage
+      ? "Preserve the exact same subject identity, clothing/object details, framing and scene from the reference image unless explicitly requested otherwise."
+      : "",
+  ].filter(Boolean).join(" ");
+
+  return {
+    prompt: plannedPrompt.slice(0, 6500),
+    negativePrompt:
+      String(parsed.negativePrompt || fallback.negativePrompt).slice(0, 1800),
+    motion: String(parsed.motion || fallback.motion).slice(0, 1800),
+    camera: String(parsed.camera || fallback.camera).slice(0, 1800),
+    numFrames: Math.round(
+      clampVideoNumber(
+        parsed.numFrames,
+        25,
+        97,
+        fallback.numFrames
+      )
+    ),
+    guidanceScale: clampVideoNumber(
+      parsed.guidanceScale,
+      2,
+      8,
+      fallback.guidanceScale
+    ),
+    inferenceSteps: Math.round(
+      clampVideoNumber(
+        parsed.inferenceSteps,
+        12,
+        40,
+        fallback.inferenceSteps
+      )
+    ),
+    planned: true,
+    model: attempt.model,
+  };
+}
+
+function videoProviderName(env) {
+  const value = String(env.HF_VIDEO_PROVIDER || "auto").trim();
+  return value || "auto";
+}
+
+function videoBlobLooksValid(video) {
+  return (
+    video &&
+    typeof video.arrayBuffer === "function" &&
+    Number(video.size || 0) > 256
+  );
+}
+
+async function generateTextVideo(client, {
+  plan,
+  quality,
+  env,
+}) {
+  const provider = videoProviderName(env);
+  const fastModel =
+    env.HF_VIDEO_MODEL_FAST ||
+    "Lightricks/LTX-Video-0.9.8-13B-distilled";
+  const qualityModel =
+    env.HF_VIDEO_MODEL_QUALITY ||
+    "tencent/HunyuanVideo";
+  const legacyModel =
+    env.HF_VIDEO_MODEL ||
+    "Wan-AI/Wan2.1-T2V-1.3B";
+
+  const candidates =
+    quality === "quality"
+      ? [qualityModel, fastModel, legacyModel]
+      : [fastModel, legacyModel, qualityModel];
+
+  const unique = [...new Set(candidates.filter(Boolean))];
+  const attempts = [];
+
+  for (const model of unique) {
+    try {
+      const video = await client.textToVideo({
+        provider,
+        model,
+        inputs: plan.prompt,
+        parameters: {
+          negative_prompt: [plan.negativePrompt],
+          num_frames: plan.numFrames,
+          guidance_scale: plan.guidanceScale,
+          num_inference_steps: plan.inferenceSteps,
+        },
+      });
+
+      if (!videoBlobLooksValid(video)) {
+        throw new Error("O provedor retornou um vídeo vazio ou inválido.");
+      }
+
+      return {
+        video,
+        model,
+        provider,
+        attempts,
+      };
+    } catch (error) {
+      attempts.push({
+        model,
+        provider,
+        error: String(error?.message || error).slice(0, 900),
+      });
+    }
+  }
+
+  const failure = new Error("Todos os modelos text-to-video falharam.");
+  failure.attempts = attempts;
+  throw failure;
+}
+
+async function generateImageVideo(client, {
+  sourceImage,
+  plan,
+  quality,
+  env,
+}) {
+  const provider = videoProviderName(env);
+  const textConditionedModel =
+    env.HF_IMAGE_VIDEO_MODEL ||
+    "Lightricks/LTX-Video";
+  const imageOnlyFallback =
+    env.HF_IMAGE_VIDEO_FALLBACK_MODEL ||
+    "Wan-AI/Wan2.1-I2V-14B-720P";
+
+  const attempts = [];
+
+  if (typeof client.imageTextToVideo === "function") {
+    try {
+      const video = await client.imageTextToVideo({
+        provider,
+        model: textConditionedModel,
+        inputs: sourceImage,
+        parameters: {
+          prompt: plan.prompt,
+          negative_prompt: plan.negativePrompt,
+          num_frames: plan.numFrames,
+          guidance_scale: plan.guidanceScale,
+          num_inference_steps: plan.inferenceSteps,
+        },
+      });
+
+      if (!videoBlobLooksValid(video)) {
+        throw new Error("O provedor retornou um vídeo vazio ou inválido.");
+      }
+
+      return {
+        video,
+        model: textConditionedModel,
+        provider,
+        method: "image-text-to-video",
+        attempts,
+      };
+    } catch (error) {
+      attempts.push({
+        model: textConditionedModel,
+        provider,
+        method: "image-text-to-video",
+        error: String(error?.message || error).slice(0, 900),
+      });
+    }
+  }
+
+  if (typeof client.imageToVideo === "function") {
+    try {
+      const video = await client.imageToVideo({
+        provider,
+        model: imageOnlyFallback,
+        inputs: sourceImage,
+        parameters: {
+          prompt: plan.prompt,
+          negative_prompt: plan.negativePrompt,
+          num_frames: plan.numFrames,
+          guidance_scale: plan.guidanceScale,
+          num_inference_steps: plan.inferenceSteps,
+        },
+      });
+
+      if (!videoBlobLooksValid(video)) {
+        throw new Error("O provedor retornou um vídeo vazio ou inválido.");
+      }
+
+      return {
+        video,
+        model: imageOnlyFallback,
+        provider,
+        method: "image-to-video",
+        attempts,
+      };
+    } catch (error) {
+      attempts.push({
+        model: imageOnlyFallback,
+        provider,
+        method: "image-to-video",
+        error: String(error?.message || error).slice(0, 900),
+      });
+    }
+  }
+
+  const failure = new Error(
+    "Todos os modelos condicionados pela imagem falharam. A NEXUS não caiu para text-to-video para não perder a referência."
+  );
+  failure.attempts = attempts;
+  throw failure;
+}
+
 async function handleVideo(request, env) {
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
@@ -1756,87 +2067,163 @@ async function handleVideo(request, env) {
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
     .slice(0, 6000);
+  const quality = body.quality === "quality" ? "quality" : "fast";
+  const startedAt = Date.now();
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
-
-  const expansion = await expandCreativePrompt({
-    kind: "video",
-    prompt,
-    history,
-    previousPrompt,
-    hasSourceImage: Boolean(sourceImage),
-    sessionId,
-    env,
-  });
 
   if (!env.HF_TOKEN) {
     return json(
       {
         error:
-          "Vídeo ainda precisa de um provedor de GPU com créditos. Chat e imagem continuam funcionando gratuitamente pelo Cloudflare.",
+          "A Video Foundation está pronta, mas geração de vídeo precisa de um provedor de GPU. Configure créditos no Hugging Face ou um provider compatível; nenhum serviço pago será ativado automaticamente.",
         error_kind: "video-provider-required",
       },
       503
     );
   }
 
+  const plan = await buildVideoPlan({
+    prompt,
+    history,
+    previousPrompt,
+    hasSourceImage: Boolean(sourceImage),
+    quality,
+    sessionId,
+    env,
+  });
+
   const client = new InferenceClient(env.HF_TOKEN);
 
-  if (sourceImage && typeof client.imageTextToVideo === "function") {
-    const imageVideoModel =
-      env.HF_IMAGE_VIDEO_MODEL || "Lightricks/LTX-Video";
-    try {
-      const video = await client.imageTextToVideo({
-        model: imageVideoModel,
-        inputs: sourceImage,
-        parameters: { prompt: expansion.prompt },
-      });
-
-      return new Response(video, {
-        headers: {
-          "Content-Type": video.type || "video/mp4",
-          "Cache-Control": "no-store",
-          "X-Nexus-Video-Mode": "image-to-video",
-          "X-Nexus-Provider": "huggingface",
-          "X-Nexus-Model": imageVideoModel,
-          "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-          "X-Nexus-Prompt-Model": expansion.model || "",
-        },
-      });
-    } catch {}
-  }
-
-  const videoModel =
-    env.HF_VIDEO_MODEL || "Wan-AI/Wan2.1-T2V-1.3B";
-
   try {
-    const video = await client.textToVideo({
-      model: videoModel,
-      inputs: expansion.prompt,
-    });
+    const generated = sourceImage
+      ? await generateImageVideo(client, {
+          sourceImage,
+          plan,
+          quality,
+          env,
+        })
+      : await generateTextVideo(client, {
+          plan,
+          quality,
+          env,
+        });
 
-    return new Response(video, {
+    if (sessionId) {
+      await Promise.all([
+        appendServerEvent(env, sessionId, {
+          type: sourceImage
+            ? "image-to-video"
+            : "text-to-video",
+          role: "assistant",
+          content: prompt,
+          meta: {
+            model: generated.model,
+            provider: generated.provider,
+            quality,
+            planned: plan.planned,
+            method: generated.method || "text-to-video",
+            previousFailures: generated.attempts?.length || 0,
+          },
+        }),
+        recordServerMetric(env, sessionId, {
+          type: "video-generation",
+          route: sourceImage
+            ? "image-to-video"
+            : "text-to-video",
+          provider: generated.provider,
+          model: generated.model,
+          latencyMs: Date.now() - startedAt,
+          ok: true,
+          meta: {
+            quality,
+            planned: plan.planned,
+            method: generated.method || "text-to-video",
+            numFrames: plan.numFrames,
+            previousFailures: generated.attempts?.length || 0,
+          },
+        }),
+      ]);
+    }
+
+    return new Response(generated.video, {
       headers: {
-        "Content-Type": video.type || "video/mp4",
+        "Content-Type": generated.video.type || "video/mp4",
         "Cache-Control": "no-store",
-        "X-Nexus-Video-Mode": "text-to-video",
-        "X-Nexus-Provider": "huggingface",
-        "X-Nexus-Model": videoModel,
-        "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-        "X-Nexus-Prompt-Model": expansion.model || "",
+        "X-Nexus-Video-Mode": sourceImage
+          ? "image-to-video"
+          : "text-to-video",
+        "X-Nexus-Video-Method":
+          generated.method ||
+          "text-to-video",
+        "X-Nexus-Provider": generated.provider || "huggingface",
+        "X-Nexus-Model": generated.model,
+        "X-Nexus-Video-Quality": quality,
+        "X-Nexus-Video-Planned": plan.planned ? "1" : "0",
+        "X-Nexus-Video-Plan-Model": plan.model || "",
+        "X-Nexus-Video-Fallbacks":
+          String(generated.attempts?.length || 0),
       },
     });
   } catch (error) {
-    const info = generationError(error);
+    const attempts = Array.isArray(error?.attempts)
+      ? error.attempts
+      : [];
+    const joinedAttempts = attempts
+      .map(
+        (attempt) =>
+          [
+            attempt.method || "",
+            attempt.model || "",
+            attempt.error || "",
+          ]
+            .filter(Boolean)
+            .join(": ")
+      )
+      .join(" | ");
+
+    const info = generationError(
+      joinedAttempts
+        ? new Error(joinedAttempts)
+        : error
+    );
+
+    if (sessionId) {
+      await recordServerMetric(env, sessionId, {
+        type: "video-generation",
+        route: sourceImage
+          ? "image-to-video"
+          : "text-to-video",
+        provider: videoProviderName(env),
+        model: attempts.map((x) => x.model).filter(Boolean).join(", "),
+        latencyMs: Date.now() - startedAt,
+        ok: false,
+        meta: {
+          quality,
+          planned: plan.planned,
+          attempts: attempts.slice(0, 5),
+          errorKind: info.kind,
+        },
+      });
+    }
+
     return json(
       {
         error:
           info.kind === "quota"
-            ? "Os créditos mensais do provedor de vídeo acabaram. Chat e imagem continuam pelo Cloudflare; vídeo precisa esperar a renovação ou usar um provedor pago."
-            : "Não consegui gerar o vídeo.",
-        provider_error: info.message,
+            ? "A Video Foundation está funcionando, mas a cota/crédito do provedor de GPU acabou."
+            : sourceImage
+              ? "Não consegui animar a imagem sem perder a referência."
+              : "Não consegui gerar o vídeo.",
+        provider_error:
+          joinedAttempts ||
+          info.message,
         error_kind: info.kind,
-        attempted_model: videoModel,
+        video_mode: sourceImage
+          ? "image-to-video"
+          : "text-to-video",
+        attempted_models: attempts.map((x) => x.model).filter(Boolean),
+        reference_preserved: sourceImage ? true : null,
       },
       info.status
     );
