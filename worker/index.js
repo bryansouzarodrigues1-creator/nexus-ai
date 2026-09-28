@@ -4,7 +4,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -511,10 +511,20 @@ async function handleStatus(env) {
       files: true,
       image: Boolean(env.AI || env.HF_TOKEN),
       imageEdit: Boolean(env.AI || env.HF_TOKEN),
-      video: Boolean(env.HF_TOKEN),
+      video: Boolean(
+        env.HF_TOKEN ||
+        env.WAVESPEED_API_KEY ||
+        env.NOVITA_API_KEY
+      ),
+      videoProviders: {
+        huggingface: Boolean(env.HF_TOKEN),
+        wavespeed: Boolean(env.WAVESPEED_API_KEY),
+        novita: Boolean(env.NOVITA_API_KEY),
+      },
       durableState: Boolean(env.CONVERSATIONS),
       agentWorkflow: Boolean(env.NEXUS_AGENT),
       learning: Boolean(env.CONVERSATIONS),
+      videoProviderPool: true,
     },
     models: {
       chatGeneral: env.CF_GENERAL_MODEL || CF_GENERAL_MODEL,
@@ -2193,6 +2203,342 @@ function videoBlobLooksValid(video) {
   );
 }
 
+async function blobToDataUrlServer(blob) {
+  if (!blob) return "";
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return "data:" + (blob.type || "image/jpeg") + ";base64," + btoa(binary);
+}
+
+async function fetchVideoBlob(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Falha ao baixar vídeo final: HTTP " + res.status);
+  const blob = await res.blob();
+  if (!videoBlobLooksValid(blob)) throw new Error("Vídeo final inválido.");
+  return blob;
+}
+
+async function pollWaveSpeedResult(resultUrl, apiKey, deadlineMs = 180000) {
+  const deadline = Date.now() + deadlineMs;
+  let waitMs = 2000;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(resultUrl, {
+      headers: { Authorization: "Bearer " + apiKey },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.code && body.code !== 200) {
+      throw new Error(body?.message || "WaveSpeed polling HTTP " + res.status);
+    }
+
+    const data = body?.data || body || {};
+    const status = String(data.status || "").toLowerCase();
+
+    if (status === "completed") {
+      const output = Array.isArray(data.outputs) ? data.outputs[0] : null;
+      if (!output) throw new Error("WaveSpeed concluiu sem output.");
+      return fetchVideoBlob(output);
+    }
+
+    if (["failed", "cancelled", "timeout", "deleted"].includes(status)) {
+      throw new Error(
+        data?.error ||
+        data?.message ||
+        "WaveSpeed terminou com status " + status
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    waitMs = Math.min(7000, waitMs + 1000);
+  }
+
+  throw new Error("WaveSpeed excedeu o tempo máximo de geração.");
+}
+
+async function generateWaveSpeedVideo({
+  sourceImage,
+  plan,
+  quality,
+  env,
+}) {
+  const apiKey = String(env.WAVESPEED_API_KEY || "").trim();
+  if (!apiKey) throw new Error("WAVESPEED_API_KEY não configurada.");
+
+  const modelPath = sourceImage
+    ? String(
+        env.WAVESPEED_I2V_MODEL ||
+        "wavespeed-ai/ltx-2.5/image-to-video"
+      )
+    : String(
+        env.WAVESPEED_T2V_MODEL ||
+        "wavespeed-ai/ltx-2.5/text-to-video"
+      );
+
+  const payload = sourceImage
+    ? {
+        image: await blobToDataUrlServer(sourceImage),
+        prompt: plan.prompt,
+        resolution: quality === "quality" ? "1080p" : "720p",
+        duration: 5,
+        seed: -1,
+      }
+    : {
+        prompt: plan.prompt,
+        resolution: quality === "quality" ? "1080p" : "720p",
+        aspect_ratio: "16:9",
+        duration: 5,
+        seed: -1,
+      };
+
+  const submit = await fetch(
+    "https://api.wavespeed.ai/api/v3/" + modelPath,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const body = await submit.json().catch(() => ({}));
+  if (!submit.ok || body?.code && body.code !== 200) {
+    throw new Error(
+      body?.message ||
+      body?.error ||
+      "WaveSpeed submit HTTP " + submit.status
+    );
+  }
+
+  const data = body?.data || body || {};
+  const taskId = data?.id;
+  const resultUrl =
+    data?.urls?.get ||
+    (taskId
+      ? "https://api.wavespeed.ai/api/v3/predictions/" +
+        encodeURIComponent(taskId) +
+        "/result"
+      : "");
+
+  if (!resultUrl) throw new Error("WaveSpeed não retornou task id/result URL.");
+
+  const video = await pollWaveSpeedResult(resultUrl, apiKey);
+  return {
+    video,
+    model: modelPath,
+    provider: "wavespeed",
+    method: sourceImage ? "image-to-video" : "text-to-video",
+    attempts: [],
+  };
+}
+
+async function pollNovitaResult(taskId, apiKey, deadlineMs = 180000) {
+  const deadline = Date.now() + deadlineMs;
+  let waitMs = 3000;
+
+  while (Date.now() < deadline) {
+    const url =
+      "https://api.novita.ai/v3/async/task-result?task_id=" +
+      encodeURIComponent(taskId);
+
+    const res = await fetch(url, {
+      headers: { Authorization: "Bearer " + apiKey },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        data?.message ||
+        data?.error ||
+        "Novita polling HTTP " + res.status
+      );
+    }
+
+    const status = String(
+      data?.task?.status ||
+      data?.task_status ||
+      ""
+    ).toUpperCase();
+
+    if (
+      status === "TASK_STATUS_SUCCEED" ||
+      status === "SUCCEED" ||
+      status === "SUCCEEDED"
+    ) {
+      const output = data?.videos?.[0]?.video_url;
+      if (!output) throw new Error("Novita concluiu sem video_url.");
+      return fetchVideoBlob(output);
+    }
+
+    if (
+      status === "TASK_STATUS_FAILED" ||
+      status === "FAILED" ||
+      status === "FAIL"
+    ) {
+      throw new Error(
+        data?.task?.reason ||
+        data?.message ||
+        "Novita informou falha na geração."
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    waitMs = Math.min(7000, waitMs + 1000);
+  }
+
+  throw new Error("Novita excedeu o tempo máximo de geração.");
+}
+
+async function generateNovitaTextVideo({
+  plan,
+  quality,
+  env,
+}) {
+  const apiKey = String(env.NOVITA_API_KEY || "").trim();
+  if (!apiKey) throw new Error("NOVITA_API_KEY não configurada.");
+
+  const model = String(env.NOVITA_T2V_MODEL || "wan2.7-t2v");
+  const res = await fetch(
+    "https://api.novita.ai/v3/async/" + model,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: {
+          prompt: plan.prompt,
+        },
+        parameters: {
+          size: quality === "quality" ? "1920*1080" : "1280*720",
+          duration: 5,
+          prompt_extend: false,
+          audio: true,
+        },
+      }),
+    }
+  );
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(
+      body?.message ||
+      body?.error ||
+      "Novita submit HTTP " + res.status
+    );
+  }
+
+  const taskId = body?.task_id || body?.data?.task_id;
+  if (!taskId) throw new Error("Novita não retornou task_id.");
+
+  const video = await pollNovitaResult(taskId, apiKey);
+  return {
+    video,
+    model,
+    provider: "novita",
+    method: "text-to-video",
+    attempts: [],
+  };
+}
+
+function configuredVideoProviderOrder(env, hasSourceImage) {
+  const requested = String(
+    env.VIDEO_PROVIDER_ORDER ||
+    "wavespeed,novita,huggingface"
+  )
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+
+  return requested.filter((provider) => {
+    if (provider === "wavespeed") return Boolean(env.WAVESPEED_API_KEY);
+    if (provider === "novita")
+      return !hasSourceImage && Boolean(env.NOVITA_API_KEY);
+    if (provider === "huggingface") return Boolean(env.HF_TOKEN);
+    return false;
+  });
+}
+
+async function generateVideoFromPool({
+  sourceImage,
+  plan,
+  quality,
+  env,
+}) {
+  const providers = configuredVideoProviderOrder(
+    env,
+    Boolean(sourceImage)
+  );
+  const attempts = [];
+
+  if (!providers.length) {
+    const error = new Error("Nenhum provedor de vídeo está configurado.");
+    error.attempts = attempts;
+    throw error;
+  }
+
+  for (const provider of providers) {
+    try {
+      if (provider === "wavespeed") {
+        const result = await generateWaveSpeedVideo({
+          sourceImage,
+          plan,
+          quality,
+          env,
+        });
+        result.attempts = attempts;
+        return result;
+      }
+
+      if (provider === "novita") {
+        const result = await generateNovitaTextVideo({
+          plan,
+          quality,
+          env,
+        });
+        result.attempts = attempts;
+        return result;
+      }
+
+      if (provider === "huggingface") {
+        const client = new InferenceClient(env.HF_TOKEN);
+        const result = sourceImage
+          ? await generateImageVideo(client, {
+              sourceImage,
+              plan,
+              quality,
+              env,
+            })
+          : await generateTextVideo(client, {
+              plan,
+              quality,
+              env,
+            });
+        result.attempts = [
+          ...attempts,
+          ...(Array.isArray(result.attempts) ? result.attempts : []),
+        ];
+        return result;
+      }
+    } catch (error) {
+      attempts.push({
+        provider,
+        model: "",
+        error: String(error?.message || error).slice(0, 1200),
+      });
+    }
+  }
+
+  const failure = new Error("Todos os provedores de vídeo configurados falharam.");
+  failure.attempts = attempts;
+  throw failure;
+}
+
 async function generateTextVideo(client, {
   plan,
   quality,
@@ -2333,11 +2679,15 @@ async function handleVideo(request, env) {
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
-  if (!env.HF_TOKEN) {
+  if (
+    !env.HF_TOKEN &&
+    !env.WAVESPEED_API_KEY &&
+    !env.NOVITA_API_KEY
+  ) {
     return json(
       {
         error:
-          "A Video Foundation está pronta, mas geração de vídeo precisa de um provedor de GPU. Configure créditos no Hugging Face ou um provider compatível; nenhum serviço pago será ativado automaticamente.",
+          "A Video Foundation está pronta, mas nenhum provedor de GPU está configurado. Adicione uma chave legítima de Hugging Face, WaveSpeed ou Novita.",
         error_kind: "video-provider-required",
       },
       503
@@ -2354,21 +2704,13 @@ async function handleVideo(request, env) {
     env,
   });
 
-  const client = new InferenceClient(env.HF_TOKEN);
-
   try {
-    const generated = sourceImage
-      ? await generateImageVideo(client, {
-          sourceImage,
-          plan,
-          quality,
-          env,
-        })
-      : await generateTextVideo(client, {
-          plan,
-          quality,
-          env,
-        });
+    const generated = await generateVideoFromPool({
+      sourceImage,
+      plan,
+      quality,
+      env,
+    });
 
     if (sessionId) {
       await Promise.all([
