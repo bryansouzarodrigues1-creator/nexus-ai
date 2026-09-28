@@ -235,6 +235,7 @@ export class NexusReasoningWorkflow extends WorkflowEntrypoint {
     return {
       answer: finalAnswer,
       model: finalModel,
+      sessionId: String(payload.sessionId || "").slice(0, 128),
       provider: "cloudflare-workflow",
       escalated,
       draftModel: draft.model,
