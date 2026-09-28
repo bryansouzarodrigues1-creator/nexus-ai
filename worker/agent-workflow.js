@@ -388,6 +388,45 @@ function contextBlock(memorySummary, history) {
   return parts.join("\n\n");
 }
 
+function formatLearningContext(context) {
+  const lessons = Array.isArray(context?.lessons) ? context.lessons : [];
+  const stats = Array.isArray(context?.modelStats) ? context.modelStats : [];
+  if (!lessons.length && !stats.length) return "";
+
+  const parts = [];
+  if (lessons.length) {
+    parts.push(
+      "LIÇÕES APRENDIDAS:\n" +
+      lessons
+        .map((item, i) =>
+          (i + 1) + ". " +
+          (item?.trigger ? "Quando " + item.trigger + ": " : "") +
+          String(item?.guidance || "")
+        )
+        .join("\n")
+    );
+  }
+
+  if (stats.length) {
+    parts.push(
+      "HISTÓRICO DE DESEMPENHO:\n" +
+      stats.slice(0, 5).map((item) =>
+        [
+          item?.model || "modelo",
+          item?.provider || "provider",
+          "success=" + Math.round(Number(item?.successRate || 0) * 100) + "%",
+          item?.explicitApproval == null
+            ? ""
+            : "aprovação=" + Math.round(Number(item.explicitApproval) * 100) + "%",
+          "score=" + Math.round(Number(item?.avgScore || 0) * 100) + "%",
+        ].filter(Boolean).join(" · ")
+      ).join("\n")
+    );
+  }
+
+  return parts.join("\n\n").slice(0, 9000);
+}
+
 export class NexusAgentWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const payload = event.payload || {};
@@ -396,8 +435,30 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
     const history = cleanHistory(payload.history);
     const memorySummary = cleanMemory(payload.memorySummary);
     const taskId = String(payload.taskId || event.instanceId || "").slice(0, 100);
-    const context = contextBlock(memorySummary, history);
+    const baseContext = contextBlock(memorySummary, history);
     const state = this.env.CONVERSATIONS?.getByName(sessionId);
+    const learningState = this.env.CONVERSATIONS?.getByName(
+      "__nexus_global_learning_v1__"
+    );
+
+    const learned = learningState
+      ? await step.do("load-learning-context", async () => {
+          try {
+            return await learningState.getLearningContext("agent");
+          } catch {
+            return { lessons: [], modelStats: [] };
+          }
+        })
+      : { lessons: [], modelStats: [] };
+
+    const learnedText = formatLearningContext(learned);
+    const context = [
+      baseContext,
+      learnedText
+        ? "APRENDIZADO RECUPERADO. Use como heurística; evidência atual e pedido do usuário vencem:\n" +
+          learnedText
+        : "",
+    ].filter(Boolean).join("\n\n");
 
     if (!message) {
       throw new Error("Workflow recebeu uma mensagem vazia.");
@@ -859,6 +920,19 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
               })),
           },
         });
+
+        if (learningState) {
+          try {
+            await learningState.recordLearningOutcome({
+              kind: "agent",
+              provider: "cloudflare-workflow",
+              model: finalModel,
+              ok: verification?.pass !== false,
+              score: verification?.score,
+              retries: repaired ? 1 : 0,
+            });
+          } catch {}
+        }
 
         return true;
       });
