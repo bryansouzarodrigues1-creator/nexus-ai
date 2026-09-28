@@ -104,7 +104,7 @@ export class ConversationState extends DurableObject {
   }
 
   async getSnapshot() {
-    const [summary, events, tasks, metrics, profile, feedback, lessons, modelStats] = await Promise.all([
+    const [summary, events, tasks, metrics, profile, feedback, lessons, modelStats, providerHealth] = await Promise.all([
       this.ctx.storage.get("summary"),
       this.ctx.storage.get("events"),
       this.ctx.storage.get("tasks"),
@@ -113,6 +113,7 @@ export class ConversationState extends DurableObject {
       this.ctx.storage.get("feedback"),
       this.ctx.storage.get("lessons"),
       this.ctx.storage.get("modelStats"),
+      this.ctx.storage.get("providerHealth"),
     ]);
 
     return {
@@ -124,6 +125,10 @@ export class ConversationState extends DurableObject {
       feedback: Array.isArray(feedback) ? feedback : [],
       lessons: Array.isArray(lessons) ? lessons : [],
       modelStats: modelStats && typeof modelStats === "object" ? modelStats : {},
+      providerHealth:
+        providerHealth && typeof providerHealth === "object"
+          ? providerHealth
+          : {},
     };
   }
 
@@ -363,11 +368,96 @@ export class ConversationState extends DurableObject {
     };
   }
 
+  async getProviderHealth() {
+    const health = (await this.ctx.storage.get("providerHealth")) || {};
+    const now = Date.now();
+    const next = {};
+
+    for (const [key, value] of Object.entries(
+      health && typeof health === "object" ? health : {}
+    )) {
+      if (!value || typeof value !== "object") continue;
+      const cooldownUntil = Number(value.cooldownUntil || 0);
+      next[key] = {
+        ...value,
+        available: cooldownUntil <= now,
+      };
+    }
+
+    return next;
+  }
+
+  async markProviderFailure(provider, failure = {}) {
+    const key = cleanText(provider || "unknown", 80).toLowerCase();
+    if (!key) throw new Error("Provider obrigatório.");
+
+    const health = (await this.ctx.storage.get("providerHealth")) || {};
+    const now = Date.now();
+    const cooldownMs = Math.max(
+      0,
+      Math.min(
+        7 * 24 * 60 * 60 * 1000,
+        Number(failure.cooldownMs || 0)
+      )
+    );
+
+    health[key] = {
+      provider: key,
+      status: "cooldown",
+      kind: cleanText(failure.kind || "unknown", 40),
+      reason: cleanText(failure.reason || "", 1400),
+      cooldownUntil: now + cooldownMs,
+      lastFailureAt: now,
+      failures: Number(health[key]?.failures || 0) + 1,
+      successes: Number(health[key]?.successes || 0),
+      updatedAt: now,
+    };
+
+    await this.ctx.storage.put("providerHealth", health);
+    return health[key];
+  }
+
+  async markProviderSuccess(provider) {
+    const key = cleanText(provider || "unknown", 80).toLowerCase();
+    if (!key) throw new Error("Provider obrigatório.");
+
+    const health = (await this.ctx.storage.get("providerHealth")) || {};
+    const now = Date.now();
+    health[key] = {
+      provider: key,
+      status: "available",
+      kind: "",
+      reason: "",
+      cooldownUntil: 0,
+      lastSuccessAt: now,
+      failures: Number(health[key]?.failures || 0),
+      successes: Number(health[key]?.successes || 0) + 1,
+      updatedAt: now,
+    };
+
+    await this.ctx.storage.put("providerHealth", health);
+    return health[key];
+  }
+
+  async clearProviderHealth(provider = "") {
+    const key = cleanText(provider, 80).toLowerCase();
+    if (!key) {
+      await this.ctx.storage.delete("providerHealth");
+      return { ok: true, all: true };
+    }
+
+    const health = (await this.ctx.storage.get("providerHealth")) || {};
+    delete health[key];
+    await this.ctx.storage.put("providerHealth", health);
+    return { ok: true, provider: key };
+  }
+
   async clearLearning() {
     await Promise.all([
       this.ctx.storage.delete("feedback"),
       this.ctx.storage.delete("lessons"),
       this.ctx.storage.delete("modelStats"),
+      this.ctx.storage.delete("providerHealth"),
     ]);
     return { ok: true };
   }
