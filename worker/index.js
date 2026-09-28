@@ -1,7 +1,11 @@
 import { InferenceClient } from "@huggingface/inference";
+import { NexusConversationState } from "./state.js";
+import { NexusReasoningWorkflow } from "./reasoning-workflow.js";
+
+export { NexusConversationState, NexusReasoningWorkflow };
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -139,6 +143,80 @@ async function searchWeb(query, env) {
   };
 }
 
+function getConversationStub(env, sessionId) {
+  if (!env.CONVERSATION_STATE || !sessionId) return null;
+  try {
+    const id = env.CONVERSATION_STATE.idFromName(String(sessionId).slice(0, 128));
+    return env.CONVERSATION_STATE.get(id);
+  } catch {
+    return null;
+  }
+}
+
+async function readConversationState(env, sessionId) {
+  const stub = getConversationStub(env, sessionId);
+  if (!stub) return null;
+  try {
+    const res = await stub.fetch("https://nexus-state/state");
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeConversationState(env, sessionId, patch) {
+  const stub = getConversationStub(env, sessionId);
+  if (!stub) return null;
+  try {
+    const res = await stub.fetch("https://nexus-state/state", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch || {}),
+    });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function appendConversationEvent(env, sessionId, event) {
+  const stub = getConversationStub(env, sessionId);
+  if (!stub) return;
+  try {
+    await stub.fetch("https://nexus-state/event", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(event || {}),
+    });
+  } catch {}
+}
+
+async function handleTaskStatus(taskId, env) {
+  if (!env.NEXUS_REASONING) {
+    return json({ error: "Workflow de raciocínio não configurado." }, 503);
+  }
+
+  try {
+    const instance = await env.NEXUS_REASONING.get(taskId);
+    const status = await instance.status();
+    return json({
+      id: taskId,
+      status: status.status,
+      output: status.output || null,
+      error: status.error || null,
+      rollback: status.rollback || null,
+    });
+  } catch (error) {
+    return json(
+      {
+        error: "Não consegui consultar a tarefa.",
+        provider_error: error?.message || String(error),
+      },
+      502
+    );
+  }
+}
+
 async function handleStatus(env) {
   return json({
     ok: true,
@@ -155,6 +233,8 @@ async function handleStatus(env) {
       image: Boolean(env.AI || env.HF_TOKEN),
       imageEdit: Boolean(env.AI || env.HF_TOKEN),
       video: Boolean(env.HF_TOKEN),
+      durableState: Boolean(env.CONVERSATION_STATE),
+      workflows: Boolean(env.NEXUS_REASONING),
     },
     models: {
       chatGeneral: env.CF_GENERAL_MODEL || CF_GENERAL_MODEL,
@@ -688,14 +768,64 @@ async function handleChat(request, env) {
   const mode = body.mode === "search" ? "search" : "chat";
   const history = cleanHistory(body.history);
   const attachment = body.attachment || null;
-  const memorySummary = String(body.memorySummary || "").trim().slice(0, 16000);
+  let memorySummary = String(body.memorySummary || "").trim().slice(0, 16000);
   const sessionId = String(body.sessionId || "").slice(0, 128);
+
+  const serverState = sessionId
+    ? await readConversationState(env, sessionId)
+    : null;
+
+  if (!memorySummary && serverState?.memorySummary) {
+    memorySummary = String(serverState.memorySummary).slice(0, 16000);
+  }
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
   if (!env.AI && !env.HF_TOKEN)
     return json({ error: "Nenhum provedor de IA está configurado." }, 503);
 
   const route = chooseChatRoute(message, mode, attachment);
+
+  if (
+    route.key === "deep" &&
+    mode === "chat" &&
+    !attachment &&
+    env.NEXUS_REASONING &&
+    body.useWorkflow !== false
+  ) {
+    try {
+      const instance = await env.NEXUS_REASONING.create({
+        params: {
+          message,
+          history,
+          memorySummary,
+          sessionId,
+        },
+      });
+
+      if (sessionId) {
+        await writeConversationState(env, sessionId, {
+          activeWorkflowId: instance.id,
+          lastRoute: "deep-workflow",
+        });
+        await appendConversationEvent(env, sessionId, {
+          type: "workflow-started",
+          workflowId: instance.id,
+        });
+      }
+
+      return json(
+        {
+          async: true,
+          taskId: instance.id,
+          route: "deep-workflow",
+          routeReason: "raciocínio profundo durável com verificação",
+        },
+        202
+      );
+    } catch {
+      // Falha ao iniciar Workflow: continua pelo caminho síncrono existente.
+    }
+  }
 
   const system = [
     "Você é NEXUS AI, um assistente geral de alta qualidade, direto, curioso e pouco propenso a recusas desnecessárias.",
@@ -937,6 +1067,19 @@ async function handleChat(request, env) {
     url: r.url,
   }));
 
+  if (sessionId) {
+    await writeConversationState(env, sessionId, {
+      lastRoute: route.key,
+      lastModel: attempt.model,
+    });
+    await appendConversationEvent(env, sessionId, {
+      type: "chat-response",
+      route: route.key,
+      model: attempt.model,
+      provider: attempt.provider,
+    });
+  }
+
   return json({
     answer,
     model: attempt.model,
@@ -999,8 +1142,20 @@ async function handleMemory(request, env) {
   }
 
   const summary = extractModelText(attempt.raw) || previousSummary;
+  const compactSummary = summary.slice(0, 16000);
+
+  if (sessionId && compactSummary) {
+    await writeConversationState(env, sessionId, {
+      memorySummary: compactSummary,
+    });
+    await appendConversationEvent(env, sessionId, {
+      type: "memory-updated",
+      model: attempt.model,
+    });
+  }
+
   return json({
-    summary: summary.slice(0, 16000),
+    summary: compactSummary,
     updated: Boolean(summary),
     model: attempt.model,
     provider: attempt.provider,
@@ -1316,6 +1471,12 @@ export default {
 
       if (url.pathname === "/api/video" && request.method === "POST")
         return handleVideo(request, env);
+
+      if (url.pathname.startsWith("/api/tasks/") && request.method === "GET") {
+        const taskId = decodeURIComponent(url.pathname.slice("/api/tasks/".length));
+        if (!taskId) return json({ error: "taskId ausente." }, 400);
+        return handleTaskStatus(taskId, env);
+      }
 
       return env.ASSETS.fetch(request);
     } catch (error) {
