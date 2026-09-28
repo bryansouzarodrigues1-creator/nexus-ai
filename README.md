@@ -1,4 +1,4 @@
-# NEXUS AI v2.2
+# NEXUS AI v2.3
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -235,6 +235,46 @@ Bindings nativos protegem a franquia:
 - limite agregado de uso de IA.
 
 O frontend usa um UUID anônimo local apenas para controle de abuso.
+
+## Video Provider Pool V2.3
+
+A NEXUS pode usar vários provedores de vídeo legítimos e independentes.
+
+Ordem padrão:
+
+```text
+WaveSpeed
+   ↓ se indisponível / sem saldo
+Novita
+   ↓ se indisponível / sem saldo
+Hugging Face
+```
+
+A ordem pode ser alterada por `VIDEO_PROVIDER_ORDER`.
+
+Provedores suportados atualmente:
+- Hugging Face Inference Providers;
+- WaveSpeed direct API;
+- Novita direct API para text-to-video.
+
+WaveSpeed usa LTX 2.5 por padrão para:
+- text-to-video;
+- image-to-video.
+
+Novita usa Wan 2.7 por padrão para text-to-video.
+
+Image-to-video na Novita não está habilitado ainda porque a API exige uma URL de imagem; a NEXUS não publica automaticamente imagens privadas do usuário.
+
+Chaves esperadas:
+- `HF_TOKEN`
+- `WAVESPEED_API_KEY`
+- `NOVITA_API_KEY`
+
+Nenhuma chave deve ser exposta no frontend.
+
+O pool tenta somente provedores para os quais existe uma chave configurada. Se um falhar por cota, incompatibilidade ou indisponibilidade, a próxima opção é tentada.
+
+A NEXUS registra qual provider funcionou ou falhou no Learning Loop, preparando o caminho para roteamento adaptativo por desempenho e custo.
 
 ## Video Foundation V2.1
 
