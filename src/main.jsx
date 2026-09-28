@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole} from 'lucide-react';
+import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
 
 const starterActions=[
@@ -197,6 +197,9 @@ function App(){
   const [menu,setMenu]=useState(false);
   const [status,setStatus]=useState(null);
   const [attachment,setAttachment]=useState(null);
+  const [learningOpen,setLearningOpen]=useState(false);
+  const [learningStatus,setLearningStatus]=useState(null);
+  const [learningBusy,setLearningBusy]=useState(false);
   const fileRef=useRef(null);
 
   useEffect(()=>{
@@ -213,6 +216,40 @@ function App(){
   useEffect(()=>{
     fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
   },[]);
+
+  async function loadLearningStatus(){
+    setLearningBusy(true);
+    try{
+      const res=await fetch('/api/learning/status',{
+        headers:{'x-nexus-client':getClientId()}
+      });
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Falha ao carregar aprendizado.');
+      setLearningStatus(data);
+    }catch(e){
+      setLearningStatus({error:e.message||'Falha ao carregar aprendizado.'});
+    }finally{
+      setLearningBusy(false);
+    }
+  }
+
+  function openLearningPanel(){
+    setLearningOpen(true);
+    setMenu(false);
+    void loadLearningStatus();
+  }
+
+  function pct(value){
+    return Number.isFinite(Number(value))
+      ?Math.round(Number(value)*100)+'%'
+      :'—';
+  }
+
+  function ms(value){
+    const n=Number(value);
+    if(!Number.isFinite(n)||n<=0)return '—';
+    return n>=1000?(n/1000).toFixed(1)+'s':Math.round(n)+'ms';
+  }
 
   useEffect(()=>{
     if(!active)return;
@@ -287,7 +324,8 @@ function App(){
           :null,
       meta:{
         generationMode:message?.generationMode||null,
-        retries:Number(message?.visualRetry||message?.videoFallbacks||0)
+        retries:Number(message?.visualRetry||message?.videoFallbacks||0),
+        adaptiveRouter:message?.adaptiveRouter||null
       }
     };
 
@@ -622,6 +660,18 @@ function App(){
         const visualScoreRaw=res.headers.get('x-nexus-visual-score');
         const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
         const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
+        const adaptiveUsed=res.headers.get('x-nexus-adaptive-router')==='1';
+        const adaptiveScoreRaw=res.headers.get('x-nexus-adaptive-score');
+        const adaptiveConfidenceRaw=res.headers.get('x-nexus-adaptive-confidence');
+        const adaptiveRouter={
+          adaptive:adaptiveUsed,
+          selected:{
+            model,
+            provider,
+            score:adaptiveScoreRaw!==null&&adaptiveScoreRaw!==''?Number(adaptiveScoreRaw):null,
+            confidence:adaptiveConfidenceRaw!==null&&adaptiveConfidenceRaw!==''?Number(adaptiveConfidenceRaw):null
+          }
+        };
 
         const content=imageMode==='edit'
           ?'Imagem editada mantendo a referência.'
@@ -640,6 +690,7 @@ function App(){
           visualVerified,
           visualScore,
           visualRetry,
+          adaptiveRouter,
           generationMode:imageMode
         });
       }else if(requestMode==='video'){
@@ -798,6 +849,7 @@ function App(){
           provider:data.provider||'',
           route:data.route||'',
           routeReason:data.routeReason||'',
+          adaptiveRouter:data.adaptiveRouter||null,
           workflow:data.workflow||null
         });
       }
@@ -840,7 +892,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.4</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.5</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -850,10 +902,83 @@ function App(){
         </button>)}
       </div>
       <div className="sidefoot">
-        <button><Settings size={16}/> Configurações</button>
+        <button onClick={openLearningPanel}><Settings size={16}/> Aprendizado</button>
         <div className="status"><i className={status?.providers?.chat?'ok':''}/>{status?.providers?.chat?(status?.behaviorMode==='open-contextual'?'IA na nuvem · modo aberto':'IA na nuvem conectada'):'Nenhum provedor conectado'}</div>
       </div>
     </aside>
+
+    {learningOpen&&<div className="learning-overlay" onClick={()=>setLearningOpen(false)}>
+      <section className="learning-panel" onClick={e=>e.stopPropagation()}>
+        <div className="learning-head">
+          <div>
+            <span className="learning-eyebrow"><BrainCircuit size={14}/> Adaptive Core</span>
+            <h2>Aprendizado da NEXUS</h2>
+            <p>Telemetria agregada. Conteúdo bruto das conversas não aparece aqui.</p>
+          </div>
+          <div className="learning-head-actions">
+            <button onClick={loadLearningStatus} disabled={learningBusy} title="Atualizar">
+              <RefreshCw size={17} className={learningBusy?'spin':''}/>
+            </button>
+            <button onClick={()=>setLearningOpen(false)} title="Fechar"><X size={18}/></button>
+          </div>
+        </div>
+
+        {learningStatus?.error
+          ?<div className="learning-error">{learningStatus.error}</div>
+          :<>
+            <div className="learning-summary">
+              <div><Activity size={17}/><strong>{learningStatus?.summary?.modelStats??'—'}</strong><span>modelos/rotas</span></div>
+              <div><BrainCircuit size={17}/><strong>{learningStatus?.summary?.lessons??'—'}</strong><span>lições</span></div>
+              <div><Sparkles size={17}/><strong>{learningStatus?.adaptiveRouter?'ON':'—'}</strong><span>Adaptive Router</span></div>
+            </div>
+
+            <div className="learning-section">
+              <div className="learning-section-title">
+                <h3>Desempenho dos modelos</h3>
+                <span>qualidade ≠ falha operacional</span>
+              </div>
+              <div className="learning-models">
+                {(learningStatus?.modelStats||[]).length
+                  ?(learningStatus.modelStats||[]).slice(0,18).map((item,i)=><div className="learning-model" key={(item.kind||'')+(item.model||'')+i}>
+                    <div className="learning-model-name">
+                      <b>{item.kind}</b>
+                      <span>{item.model||'modelo desconhecido'}</span>
+                      <small>{item.provider||'provider'}</small>
+                    </div>
+                    <div className="learning-metrics">
+                      <span title="Confiabilidade operacional">reliab. <b>{pct(item.reliabilityRate)}</b></span>
+                      <span title="Aprovação explícita">👍 <b>{pct(item.explicitApproval)}</b></span>
+                      <span title="Score do verificador">score <b>{pct(item.avgScore)}</b></span>
+                      <span title="Latência média">lat. <b>{ms(item.avgLatencyMs)}</b></span>
+                      <span title="Amostras">n <b>{item.count||0}</b></span>
+                    </div>
+                    {(item.operationalFailures>0||item.qualityFailures>0)&&<div className="learning-failures">
+                      operacional {item.operationalFailures||0} · qualidade {item.qualityFailures||0}
+                      {item.lastFailureKind?' · último: '+item.lastFailureKind:''}
+                    </div>}
+                  </div>)
+                  :<div className="learning-empty">{learningBusy?'Carregando…':'Ainda não há amostras suficientes.'}</div>}
+              </div>
+            </div>
+
+            <div className="learning-section">
+              <div className="learning-section-title">
+                <h3>Lições reutilizáveis</h3>
+                <span>extraídas de feedback/verificação</span>
+              </div>
+              <div className="learning-lessons">
+                {(learningStatus?.lessons||[]).length
+                  ?(learningStatus.lessons||[]).slice(0,12).map((item,i)=><div className="learning-lesson" key={(item.at||0)+'-'+i}>
+                    <div><b>{item.taskType}</b><span>{pct(item.confidence)} confiança</span></div>
+                    {item.trigger&&<small>Quando: {item.trigger}</small>}
+                    <p>{item.guidance}</p>
+                  </div>)
+                  :<div className="learning-empty">{learningBusy?'Carregando…':'Nenhuma lição armazenada ainda.'}</div>}
+              </div>
+            </div>
+          </>}
+      </section>
+    </div>}
 
     <main>
       <header>
@@ -902,7 +1027,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
