@@ -4,7 +4,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -322,21 +322,15 @@ async function handleStatus(env) {
       imageFallback: env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell",
       imageEditFallback:
         env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev",
-      videoFast:
-        env.HF_VIDEO_MODEL_FAST ||
-        "Lightricks/LTX-Video-0.9.8-13B-distilled",
-      videoQuality:
+      videoText:
+        env.HF_VIDEO_MODEL ||
         env.HF_VIDEO_MODEL_QUALITY ||
         "tencent/HunyuanVideo",
-      videoFallback:
-        env.HF_VIDEO_MODEL ||
-        "Wan-AI/Wan2.1-T2V-1.3B",
       imageVideo:
         env.HF_IMAGE_VIDEO_MODEL ||
-        "Lightricks/LTX-Video",
+        "Lightricks/LTX-Video-0.9.8-13B-distilled",
       imageVideoFallback:
-        env.HF_IMAGE_VIDEO_FALLBACK_MODEL ||
-        "Wan-AI/Wan2.1-I2V-14B-720P",
+        env.HF_IMAGE_VIDEO_FALLBACK_MODEL || null,
     },
   });
 }
@@ -1804,6 +1798,7 @@ async function buildVideoPlan({
           "Preserve rigorosamente identidade, roupa, objeto, composição e cenário quando houver imagem de referência.",
           "Não invente personagens, objetos ou mudanças de cena não solicitadas.",
           "Prefira movimento fisicamente coerente e câmera estável.",
+          "Escreva prompt, negativePrompt, motion e camera em INGLÊS, mesmo que o usuário fale outro idioma. Preserve exatamente a intenção.",
           "Retorne SOMENTE JSON válido no schema:",
           "{prompt:string,negativePrompt:string,motion:string,camera:string,numFrames:number,guidanceScale:number,inferenceSteps:number}.",
           "numFrames deve ficar entre 25 e 97.",
@@ -1907,25 +1902,23 @@ async function generateTextVideo(client, {
   env,
 }) {
   const provider = videoProviderName(env);
-  const fastModel =
-    env.HF_VIDEO_MODEL_FAST ||
-    "Lightricks/LTX-Video-0.9.8-13B-distilled";
-  const qualityModel =
-    env.HF_VIDEO_MODEL_QUALITY ||
-    "tencent/HunyuanVideo";
-  const legacyModel =
-    env.HF_VIDEO_MODEL ||
-    "Wan-AI/Wan2.1-T2V-1.3B";
 
-  const candidates =
-    quality === "quality"
-      ? [qualityModel, fastModel, legacyModel]
-      : [fastModel, legacyModel, qualityModel];
+  // V2.1.1: use somente modelos explicitamente configurados para text-to-video.
+  // HunyuanVideo é o default porque o provider atual aceitou esse task;
+  // LTX 0.9.8 13B fica reservado para image-to-video.
+  const configured = [
+    env.HF_VIDEO_MODEL,
+    env.HF_VIDEO_MODEL_QUALITY,
+    env.HF_VIDEO_MODEL_FAST,
+  ].filter(Boolean);
 
-  const unique = [...new Set(candidates.filter(Boolean))];
+  const candidates = configured.length
+    ? [...new Set(configured)]
+    : ["tencent/HunyuanVideo"];
+
   const attempts = [];
 
-  for (const model of unique) {
+  for (const model of candidates) {
     try {
       const video = await client.textToVideo({
         provider,
@@ -1958,7 +1951,7 @@ async function generateTextVideo(client, {
     }
   }
 
-  const failure = new Error("Todos os modelos text-to-video falharam.");
+  const failure = new Error("Todos os modelos text-to-video compatíveis falharam.");
   failure.attempts = attempts;
   throw failure;
 }
@@ -1970,56 +1963,27 @@ async function generateImageVideo(client, {
   env,
 }) {
   const provider = videoProviderName(env);
-  const textConditionedModel =
+  const primaryModel =
     env.HF_IMAGE_VIDEO_MODEL ||
-    "Lightricks/LTX-Video";
-  const imageOnlyFallback =
-    env.HF_IMAGE_VIDEO_FALLBACK_MODEL ||
-    "Wan-AI/Wan2.1-I2V-14B-720P";
-
+    "Lightricks/LTX-Video-0.9.8-13B-distilled";
+  const fallbackModel =
+    env.HF_IMAGE_VIDEO_FALLBACK_MODEL || "";
+  const candidates = [...new Set([primaryModel, fallbackModel].filter(Boolean))];
   const attempts = [];
 
-  if (typeof client.imageTextToVideo === "function") {
-    try {
-      const video = await client.imageTextToVideo({
-        provider,
-        model: textConditionedModel,
-        inputs: sourceImage,
-        parameters: {
-          prompt: plan.prompt,
-          negative_prompt: plan.negativePrompt,
-          num_frames: plan.numFrames,
-          guidance_scale: plan.guidanceScale,
-          num_inference_steps: plan.inferenceSteps,
-        },
-      });
-
-      if (!videoBlobLooksValid(video)) {
-        throw new Error("O provedor retornou um vídeo vazio ou inválido.");
-      }
-
-      return {
-        video,
-        model: textConditionedModel,
-        provider,
-        method: "image-text-to-video",
-        attempts,
-      };
-    } catch (error) {
-      attempts.push({
-        model: textConditionedModel,
-        provider,
-        method: "image-text-to-video",
-        error: String(error?.message || error).slice(0, 900),
-      });
-    }
+  // The HF/Fal mapping for LTX 0.9.8 is image-to-video. The prompt is
+  // supported as an imageToVideo parameter, so use that task directly.
+  if (typeof client.imageToVideo !== "function") {
+    const failure = new Error("O SDK atual não expõe imageToVideo.");
+    failure.attempts = attempts;
+    throw failure;
   }
 
-  if (typeof client.imageToVideo === "function") {
+  for (const model of candidates) {
     try {
       const video = await client.imageToVideo({
         provider,
-        model: imageOnlyFallback,
+        model,
         inputs: sourceImage,
         parameters: {
           prompt: plan.prompt,
@@ -2036,14 +2000,14 @@ async function generateImageVideo(client, {
 
       return {
         video,
-        model: imageOnlyFallback,
+        model,
         provider,
         method: "image-to-video",
         attempts,
       };
     } catch (error) {
       attempts.push({
-        model: imageOnlyFallback,
+        model,
         provider,
         method: "image-to-video",
         error: String(error?.message || error).slice(0, 900),
@@ -2052,7 +2016,7 @@ async function generateImageVideo(client, {
   }
 
   const failure = new Error(
-    "Todos os modelos condicionados pela imagem falharam. A NEXUS não caiu para text-to-video para não perder a referência."
+    "Todos os modelos image-to-video falharam. A NEXUS não caiu para text-to-video para não perder a referência."
   );
   failure.attempts = attempts;
   throw failure;
