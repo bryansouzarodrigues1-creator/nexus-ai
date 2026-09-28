@@ -1,10 +1,15 @@
 import { InferenceClient } from "@huggingface/inference";
+import {
+  classifyAdaptiveFailure,
+  compactAdaptiveDecision,
+  rankAdaptiveCandidates,
+} from "./adaptive-router.js";
 export { ConversationState } from "./conversation-state.js";
 export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -501,6 +506,8 @@ async function handleStatus(env) {
         explicitFeedback: true,
         reusableLessons: true,
         modelPerformanceMemory: true,
+        adaptiveRouting: true,
+        operationalFailureIsolation: true,
       },
     },
     providers: {
@@ -532,6 +539,7 @@ async function handleStatus(env) {
       videoProviderPool: true,
       videoEnabled,
       codexEnabled: false,
+      adaptiveRouter: true,
     },
     models: {
       chatGeneral: env.CF_GENERAL_MODEL || CF_GENERAL_MODEL,
@@ -750,6 +758,216 @@ function chooseChatRoute(message, mode, attachment) {
   };
 }
 
+function cloudflareModelForRoute(routeKey, env) {
+  if (routeKey === "deep") {
+    return env.CF_REASONING_MODEL || CF_REASONING_MODEL;
+  }
+  if (routeKey === "code" || routeKey === "open") {
+    return env.CF_CODE_MODEL || CF_CODE_MODEL;
+  }
+  if (routeKey === "vision") {
+    return env.CF_VISION_MODEL || CF_VISION_MODEL;
+  }
+  return env.CF_GENERAL_MODEL || CF_GENERAL_MODEL;
+}
+
+function buildAdaptiveChatCandidates(route, env) {
+  const general = env.CF_GENERAL_MODEL || CF_GENERAL_MODEL;
+  const code = env.CF_CODE_MODEL || CF_CODE_MODEL;
+  const reasoning = env.CF_REASONING_MODEL || CF_REASONING_MODEL;
+  const vision = env.CF_VISION_MODEL || CF_VISION_MODEL;
+
+  if (route.key === "vision") {
+    return [{
+      model: vision,
+      provider: "cloudflare",
+      label: "vision",
+      baseScore: 0.84,
+      costTier: 1,
+      allowExploration: false,
+    }];
+  }
+
+  if (route.key === "search") {
+    return [{
+      model: general,
+      provider: "cloudflare",
+      label: "search-general",
+      baseScore: 0.82,
+      costTier: 0,
+      allowExploration: false,
+    }];
+  }
+
+  if (route.key === "deep") {
+    return [{
+      model: reasoning,
+      provider: "cloudflare",
+      label: "reasoning",
+      baseScore: 0.88,
+      costTier: 2,
+      allowExploration: false,
+    }];
+  }
+
+  if (route.key === "code") {
+    return [
+      {
+        model: code,
+        provider: "cloudflare",
+        label: "code",
+        baseScore: 0.82,
+        costTier: 0,
+      },
+      {
+        model: reasoning,
+        provider: "cloudflare",
+        label: "reasoning",
+        baseScore: 0.72,
+        costTier: 2,
+      },
+    ];
+  }
+
+  if (route.key === "open") {
+    return [
+      {
+        model: code,
+        provider: "cloudflare",
+        label: "contextual",
+        baseScore: 0.79,
+        costTier: 0,
+      },
+      {
+        model: general,
+        provider: "cloudflare",
+        label: "general",
+        baseScore: 0.73,
+        costTier: 0,
+      },
+    ];
+  }
+
+  return [
+    {
+      model: general,
+      provider: "cloudflare",
+      label: "general",
+      baseScore: 0.82,
+      costTier: 0,
+    },
+    {
+      model: code,
+      provider: "cloudflare",
+      label: "alternate",
+      baseScore: 0.70,
+      costTier: 0,
+    },
+  ];
+}
+
+function resolveAdaptiveChatRoute(route, learningContext, env) {
+  const candidates = buildAdaptiveChatCandidates(route, env);
+  const decision = rankAdaptiveCandidates(
+    candidates,
+    learningContext?.modelStats || [],
+    {
+      economyWeight: 0.035,
+      latencyTargetMs:
+        route.key === "deep"
+          ? 9000
+          : route.key === "vision"
+            ? 7000
+            : 4500,
+      minimumEvidenceToOverride: 8,
+      explorationWeight: 0.016,
+    }
+  );
+
+  const selectedModel =
+    decision?.selected?.model ||
+    cloudflareModelForRoute(route.key, env);
+
+  return {
+    ...route,
+    model: selectedModel,
+    reason:
+      route.reason +
+      (decision?.adaptive
+        ? " · modelo adaptado pelo histórico"
+        : " · rota-base preservada"),
+    adaptiveDecision: compactAdaptiveDecision(decision),
+  };
+}
+
+function resolveAdaptiveImageRoute({
+  requestedQuality,
+  hasSourceImage,
+  learningContext,
+  env,
+}) {
+  const fastModel =
+    env.CF_IMAGE_FAST_MODEL ||
+    CF_IMAGE_FAST_MODEL;
+  const qualityModel =
+    env.CF_IMAGE_QUALITY_MODEL ||
+    CF_IMAGE_QUALITY_MODEL;
+
+  const explicitQuality = requestedQuality === "quality";
+  const candidates = explicitQuality
+    ? [{
+        model: qualityModel,
+        provider: "cloudflare",
+        label: "quality",
+        baseScore: 0.90,
+        costTier: 1,
+        allowExploration: false,
+        quality: "quality",
+      }]
+    : [
+        {
+          model: fastModel,
+          provider: "cloudflare",
+          label: "fast",
+          baseScore: hasSourceImage ? 0.78 : 0.82,
+          costTier: 0,
+          quality: "fast",
+        },
+        {
+          model: qualityModel,
+          provider: "cloudflare",
+          label: "quality",
+          baseScore: hasSourceImage ? 0.76 : 0.70,
+          costTier: 1,
+          quality: "quality",
+        },
+      ];
+
+  const decision = rankAdaptiveCandidates(
+    candidates,
+    learningContext?.modelStats || [],
+    {
+      economyWeight: 0.05,
+      latencyTargetMs: 8000,
+      minimumEvidenceToOverride: 10,
+      explorationWeight: 0.012,
+      priorQuality: hasSourceImage ? 0.76 : 0.74,
+    }
+  );
+
+  const selected =
+    decision?.selected ||
+    candidates[0];
+
+  return {
+    quality:
+      selected.quality ||
+      (selected.model === qualityModel ? "quality" : "fast"),
+    model: selected.model,
+    adaptiveDecision: compactAdaptiveDecision(decision),
+  };
+}
+
 async function runCloudflareChat(model, messages, env, options = {}) {
   if (!env.AI) {
     return {
@@ -771,7 +989,13 @@ async function runCloudflareChat(model, messages, env, options = {}) {
   try {
     let payload;
 
-    if (model === CF_REASONING_MODEL && options.reasoningEffort) {
+    if (
+      options.reasoningEffort &&
+      (
+        model === CF_REASONING_MODEL ||
+        model === env.CF_REASONING_MODEL
+      )
+    ) {
       payload = {
         input: messages,
         reasoning: { effort: options.reasoningEffort },
@@ -822,12 +1046,32 @@ async function runTextChat(messages, env, options = {}) {
     if (primary !== CF_CODE_MODEL && !fallbacks.includes(CF_CODE_MODEL)) fallbacks.push(CF_CODE_MODEL);
 
     for (const model of [primary, ...fallbacks]) {
+      const attemptStartedAt = Date.now();
       const attempt = await runCloudflareChat(model, messages, env, {
         ...options,
-        reasoningEffort: model === CF_REASONING_MODEL ? (options.reasoningEffort || "medium") : undefined,
+        reasoningEffort:
+          (
+            model === CF_REASONING_MODEL ||
+            model === env.CF_REASONING_MODEL
+          )
+            ? (options.reasoningEffort || "medium")
+            : undefined,
       });
       lastAttempt = attempt;
       if (attempt.ok) return attempt;
+
+      if (options.learningKind) {
+        const failure = classifyAdaptiveFailure(attempt.raw);
+        await recordGlobalLearningOutcome(env, {
+          kind: options.learningKind,
+          provider: attempt.provider,
+          model: attempt.model,
+          ok: false,
+          failureKind: failure.kind,
+          latencyMs: Date.now() - attemptStartedAt,
+        });
+      }
+
       cloudflareFailure = attempt;
     }
 
@@ -840,11 +1084,25 @@ async function runTextChat(messages, env, options = {}) {
       env.HF_CHAT_MODEL ||
       "openai/gpt-oss-120b:cheapest";
 
+    let attemptStartedAt = Date.now();
     let attempt = await runHfChat(primary, messages, env, options);
     lastAttempt = attempt;
     if (attempt.ok) return attempt;
 
+    if (options.learningKind) {
+      const failure = classifyAdaptiveFailure(attempt.raw);
+      await recordGlobalLearningOutcome(env, {
+        kind: options.learningKind,
+        provider: attempt.provider,
+        model: attempt.model,
+        ok: false,
+        failureKind: failure.kind,
+        latencyMs: Date.now() - attemptStartedAt,
+      });
+    }
+
     if (primary !== "openai/gpt-oss-20b:fastest") {
+      attemptStartedAt = Date.now();
       attempt = await runHfChat(
         "openai/gpt-oss-20b:fastest",
         messages,
@@ -853,6 +1111,18 @@ async function runTextChat(messages, env, options = {}) {
       );
       lastAttempt = attempt;
       if (attempt.ok) return attempt;
+
+      if (options.learningKind) {
+        const failure = classifyAdaptiveFailure(attempt.raw);
+        await recordGlobalLearningOutcome(env, {
+          kind: options.learningKind,
+          provider: attempt.provider,
+          model: attempt.model,
+          ok: false,
+          failureKind: failure.kind,
+          latencyMs: Date.now() - attemptStartedAt,
+        });
+      }
     }
   }
 
@@ -1254,12 +1524,22 @@ async function verifyVisualEdit({
   };
 }
 
-async function runCloudflareImage({ prompt, sourceImage, quality, env }) {
+async function runCloudflareImage({
+  prompt,
+  sourceImage,
+  quality,
+  modelOverride,
+  env,
+}) {
   if (!env.AI) throw new Error("Workers AI não disponível.");
 
-  const model = quality === "quality"
-    ? (env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL)
-    : (env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL);
+  const model =
+    modelOverride ||
+    (
+      quality === "quality"
+        ? (env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL)
+        : (env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL)
+    );
 
   const form = new FormData();
   if (sourceImage) {
@@ -1350,16 +1630,21 @@ async function handleChat(request, env) {
     });
   }
 
-  const route = chooseChatRoute(message, mode, attachment);
+  const baseRoute = chooseChatRoute(message, mode, attachment);
   const learningKind =
-    route.key === "code"
+    baseRoute.key === "code"
       ? "code"
-      : route.key === "search"
+      : baseRoute.key === "search"
         ? "search"
-        : route.key === "vision"
+        : baseRoute.key === "vision"
           ? "vision"
           : "chat";
   const learningContext = await getLearningContext(env, learningKind);
+  const route = resolveAdaptiveChatRoute(
+    baseRoute,
+    learningContext,
+    env
+  );
   const learnedContextText = formatLearningContext(learningContext);
 
   const system = [
@@ -1462,6 +1747,7 @@ async function handleChat(request, env) {
       temperature: 0.45,
       topP: 0.9,
       sessionId,
+      learningKind,
       cloudflareOnly: Boolean(env.AI),
     });
 
@@ -1525,6 +1811,7 @@ async function handleChat(request, env) {
       temperature: 0.45,
       topP: 0.9,
       sessionId,
+      learningKind,
       webSearch: true,
       cloudflareOnly: true,
     });
@@ -1546,6 +1833,7 @@ async function handleChat(request, env) {
         temperature: 0.45,
         topP: 0.9,
         sessionId,
+        learningKind,
       });
     }
   } else if (mode === "search" && env.SEARXNG_URL) {
@@ -1563,6 +1851,7 @@ async function handleChat(request, env) {
       cloudflareModel: route.model,
       maxTokens: route.maxTokens,
       sessionId,
+      learningKind,
     });
   } else if (mode === "search") {
     return json(
@@ -1577,6 +1866,7 @@ async function handleChat(request, env) {
       topP: 0.94,
       reasoningEffort: route.reasoningEffort,
       sessionId,
+      learningKind,
     });
   }
 
@@ -1623,6 +1913,7 @@ async function handleChat(request, env) {
           route: route.key,
           model: attempt.model,
           provider: attempt.provider,
+          adaptiveRouter: route.adaptiveDecision || null,
         },
       }),
       recordServerMetric(env, sessionId, {
@@ -1632,6 +1923,9 @@ async function handleChat(request, env) {
         model: attempt.model,
         latencyMs: Date.now() - startedAt,
         ok: true,
+        meta: {
+          adaptiveRouter: route.adaptiveDecision || null,
+        },
       }),
     ]);
   }
@@ -1650,6 +1944,7 @@ async function handleChat(request, env) {
     provider: attempt.provider,
     route: route.key,
     routeReason: route.reason,
+    adaptiveRouter: route.adaptiveDecision || null,
     sources: nativeSources.length ? nativeSources : fallbackSources,
     usage: data?.usage || null,
     documentContext: documentContext || null,
@@ -1738,12 +2033,23 @@ async function handleImage(request, env) {
     .trim()
     .slice(0, 6000);
   const sessionId = String(body.sessionId || "").slice(0, 128);
-  const quality = body.quality === "quality" ? "quality" : "fast";
+  const requestedQuality =
+    body.quality === "quality" ? "quality" : "fast";
   const startedAt = Date.now();
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
   if (!env.AI && !env.HF_TOKEN)
     return json({ error: "Nenhum provedor de imagem está disponível." }, 503);
+
+  const imageLearningContext =
+    await getLearningContext(env, "image");
+  const imageRoute = resolveAdaptiveImageRoute({
+    requestedQuality,
+    hasSourceImage: Boolean(sourceImage),
+    learningContext: imageLearningContext,
+    env,
+  });
+  const quality = imageRoute.quality;
 
   let sourceDescription = "";
   let editSpec = null;
@@ -1786,8 +2092,13 @@ async function handleImage(request, env) {
 
     for (const imageQuality of qualities) {
       try {
+        const adaptiveModelForAttempt =
+          imageQuality === quality
+            ? imageRoute.model
+            : null;
         let generated = await runCloudflareImage({
           quality: imageQuality,
+          modelOverride: adaptiveModelForAttempt,
           prompt: promptForModel,
           sourceImage,
           env,
@@ -1837,6 +2148,7 @@ async function handleImage(request, env) {
 
           const retried = await runCloudflareImage({
             quality: imageQuality,
+            modelOverride: adaptiveModelForAttempt,
             prompt: retryPrompt,
             sourceImage,
             env,
@@ -1887,6 +2199,7 @@ async function handleImage(request, env) {
                 verified: Boolean(best.verification?.verified),
                 score: best.verification?.score,
                 retryCount: best.retryCount,
+                adaptiveRouter: imageRoute.adaptiveDecision || null,
               },
             }),
             recordServerMetric(env, sessionId, {
@@ -1900,6 +2213,7 @@ async function handleImage(request, env) {
                 verified: Boolean(best.verification?.verified),
                 score: best.verification?.score,
                 retryCount: best.retryCount,
+                adaptiveRouter: imageRoute.adaptiveDecision || null,
               },
             }),
           ]);
@@ -1966,10 +2280,37 @@ async function handleImage(request, env) {
                 ? ""
                 : String(best.verification.score),
             "X-Nexus-Visual-Retry": String(best.retryCount || 0),
+            "X-Nexus-Adaptive-Router":
+              imageRoute.adaptiveDecision?.adaptive ? "1" : "0",
+            "X-Nexus-Adaptive-Score":
+              imageRoute.adaptiveDecision?.selected?.score == null
+                ? ""
+                : String(imageRoute.adaptiveDecision.selected.score),
+            "X-Nexus-Adaptive-Confidence":
+              imageRoute.adaptiveDecision?.selected?.confidence == null
+                ? ""
+                : String(imageRoute.adaptiveDecision.selected.confidence),
           },
         });
       } catch (error) {
         cloudflareImageError = error?.message || String(error);
+        const failure = classifyAdaptiveFailure(error);
+        const failedModel =
+          imageQuality === quality
+            ? imageRoute.model
+            : (
+                imageQuality === "quality"
+                  ? (env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL)
+                  : (env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL)
+              );
+        await recordGlobalLearningOutcome(env, {
+          kind: "image",
+          provider: "cloudflare",
+          model: failedModel,
+          ok: false,
+          failureKind: failure.kind,
+          latencyMs: Date.now() - startedAt,
+        });
       }
     }
   }
@@ -2047,6 +2388,15 @@ async function handleImage(request, env) {
     });
   } catch (error) {
     const info = generationError(error);
+    const failure = classifyAdaptiveFailure(error);
+    await recordGlobalLearningOutcome(env, {
+      kind: "image",
+      provider: "huggingface",
+      model: sourceImage ? editModel : imageModel,
+      ok: false,
+      failureKind: failure.kind,
+      latencyMs: Date.now() - startedAt,
+    });
     return json(
       {
         error: sourceImage
