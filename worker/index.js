@@ -283,89 +283,15 @@ async function searchWeb(query, env) {
   };
 }
 
-function getConversationStub(env, sessionId) {
-  if (!env.CONVERSATION_STATE || !sessionId) return null;
-  try {
-    const id = env.CONVERSATION_STATE.idFromName(String(sessionId).slice(0, 128));
-    return env.CONVERSATION_STATE.get(id);
-  } catch {
-    return null;
-  }
-}
-
-async function readConversationState(env, sessionId) {
-  const stub = getConversationStub(env, sessionId);
-  if (!stub) return null;
-  try {
-    const res = await stub.fetch("https://nexus-state/state");
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function writeConversationState(env, sessionId, patch) {
-  const stub = getConversationStub(env, sessionId);
-  if (!stub) return null;
-  try {
-    const res = await stub.fetch("https://nexus-state/state", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch || {}),
-    });
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function appendConversationEvent(env, sessionId, event) {
-  const stub = getConversationStub(env, sessionId);
-  if (!stub) return;
-  try {
-    await stub.fetch("https://nexus-state/event", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(event || {}),
-    });
-  } catch {}
-}
-
-async function handleTaskStatus(taskId, env) {
-  if (!env.NEXUS_REASONING) {
-    return json({ error: "Workflow de raciocínio não configurado." }, 503);
-  }
-
-  try {
-    const instance = await env.NEXUS_REASONING.get(taskId);
-    const status = await instance.status();
-    return json({
-      id: taskId,
-      status: status.status,
-      output: status.output || null,
-      error: status.error || null,
-      rollback: status.rollback || null,
-    });
-  } catch (error) {
-    return json(
-      {
-        error: "Não consegui consultar a tarefa.",
-        provider_error: error?.message || String(error),
-      },
-      502
-    );
-  }
-}
-
 async function handleStatus(env) {
   return json({
     ok: true,
     version: VERSION,
     behaviorMode: "open-contextual",
     architecture: {
-      durableConversationState: Boolean(env.CONVERSATION_STATE),
-      reasoningWorkflow: Boolean(env.NEXUS_REASONING),
-      orchestration: "router+durable-state+workflow",
+      durableConversationState: Boolean(env.CONVERSATIONS),
+      agentWorkflow: Boolean(env.NEXUS_AGENT),
+      orchestration: "router+durable-state+planner-solver-verifier",
     },
     providers: {
       workersAI: Boolean(env.AI),
@@ -380,8 +306,6 @@ async function handleStatus(env) {
       video: Boolean(env.HF_TOKEN),
       durableState: Boolean(env.CONVERSATIONS),
       agentWorkflow: Boolean(env.NEXUS_AGENT),
-      durableState: Boolean(env.CONVERSATION_STATE),
-      workflows: Boolean(env.NEXUS_REASONING),
     },
     models: {
       chatGeneral: env.CF_GENERAL_MODEL || CF_GENERAL_MODEL,
@@ -919,11 +843,11 @@ async function handleChat(request, env) {
   const sessionId = String(body.sessionId || "").slice(0, 128);
 
   const serverState = sessionId
-    ? await readConversationState(env, sessionId)
+    ? await getServerConversation(env, sessionId)
     : null;
 
-  if (!memorySummary && serverState?.memorySummary) {
-    memorySummary = String(serverState.memorySummary).slice(0, 16000);
+  if (!memorySummary && serverState?.summary) {
+    memorySummary = String(serverState.summary).slice(0, 16000);
   }
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
@@ -940,48 +864,6 @@ async function handleChat(request, env) {
   }
 
   const route = chooseChatRoute(message, mode, attachment);
-
-  if (
-    route.key === "deep" &&
-    mode === "chat" &&
-    !attachment &&
-    env.NEXUS_REASONING &&
-    body.useWorkflow !== false
-  ) {
-    try {
-      const instance = await env.NEXUS_REASONING.create({
-        params: {
-          message,
-          history,
-          memorySummary,
-          sessionId,
-        },
-      });
-
-      if (sessionId) {
-        await writeConversationState(env, sessionId, {
-          activeWorkflowId: instance.id,
-          lastRoute: "deep-workflow",
-        });
-        await appendConversationEvent(env, sessionId, {
-          type: "workflow-started",
-          workflowId: instance.id,
-        });
-      }
-
-      return json(
-        {
-          async: true,
-          taskId: instance.id,
-          route: "deep-workflow",
-          routeReason: "raciocínio profundo durável com verificação",
-        },
-        202
-      );
-    } catch {
-      // Falha ao iniciar Workflow: continua pelo caminho síncrono existente.
-    }
-  }
 
   const system = [
     "Você é NEXUS AI, um assistente geral de alta qualidade, direto, curioso e pouco propenso a recusas desnecessárias.",
@@ -1217,41 +1099,11 @@ async function handleChat(request, env) {
 
   const answer = extractModelText(data) || "O modelo respondeu sem texto.";
 
-  if (sessionId) {
-    await appendServerMessage(env, sessionId, {
-      role: "user",
-      content: message,
-      mode,
-      route: route.key,
-    });
-    await appendServerMessage(env, sessionId, {
-      role: "assistant",
-      content: answer,
-      mode,
-      model: attempt.model,
-      provider: attempt.provider,
-      route: route.key,
-    });
-  }
-
   const nativeSources = extractSources(data);
   const fallbackSources = fallbackSearch.results.map((r) => ({
     title: r.title,
     url: r.url,
   }));
-
-  if (sessionId) {
-    await writeConversationState(env, sessionId, {
-      lastRoute: route.key,
-      lastModel: attempt.model,
-    });
-    await appendConversationEvent(env, sessionId, {
-      type: "chat-response",
-      route: route.key,
-      model: attempt.model,
-      provider: attempt.provider,
-    });
-  }
 
   if (sessionId) {
     await Promise.all([
@@ -1342,13 +1194,15 @@ async function handleMemory(request, env) {
   const compactSummary = summary.slice(0, 16000);
 
   if (sessionId && compactSummary) {
-    await writeConversationState(env, sessionId, {
-      memorySummary: compactSummary,
-    });
-    await appendConversationEvent(env, sessionId, {
-      type: "memory-updated",
-      model: attempt.model,
-    });
+    await Promise.all([
+      setServerSummary(env, sessionId, compactSummary),
+      appendServerEvent(env, sessionId, {
+        type: "memory-updated",
+        role: "assistant",
+        content: compactSummary.slice(0, 4000),
+        meta: { model: attempt.model },
+      }),
+    ]);
   }
 
   return json({
@@ -1593,428 +1447,6 @@ async function handleVideo(request, env) {
 }
 
 
-function parseLooseJson(text) {
-  const raw = String(text || "").trim();
-  try { return JSON.parse(raw); } catch {}
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try { return JSON.parse(match[0]); } catch { return null; }
-}
-
-async function getConversationStub(env, sessionId) {
-  if (!env.CONVERSATION_STATE || !sessionId) return null;
-  const id = env.CONVERSATION_STATE.idFromName(String(sessionId).slice(0, 128));
-  return env.CONVERSATION_STATE.get(id);
-}
-
-async function readServerConversationState(env, sessionId) {
-  try {
-    const stub = await getConversationStub(env, sessionId);
-    if (!stub) return null;
-    const res = await stub.fetch("https://state.internal/snapshot");
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-async function appendServerMessage(env, sessionId, message) {
-  try {
-    const stub = await getConversationStub(env, sessionId);
-    if (!stub) return;
-    await stub.fetch("https://state.internal/message", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(message),
-    });
-  } catch {}
-}
-
-async function saveServerSummary(env, sessionId, summary) {
-  try {
-    const stub = await getConversationStub(env, sessionId);
-    if (!stub) return;
-    await stub.fetch("https://state.internal/summary", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ summary }),
-    });
-  } catch {}
-}
-
-export class NexusConversationState extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        mode TEXT,
-        model TEXT,
-        provider TEXT,
-        route TEXT,
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_messages_created_at
-        ON messages(created_at);
-      CREATE TABLE IF NOT EXISTS state (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-    `);
-  }
-
-  async fetch(request) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/snapshot" && request.method === "GET") {
-      const messages = [...this.ctx.storage.sql.exec(
-        `SELECT role, content, mode, model, provider, route, created_at
-         FROM messages ORDER BY id DESC LIMIT 60`
-      )].reverse();
-
-      const summaryRows = [...this.ctx.storage.sql.exec(
-        `SELECT value FROM state WHERE key = 'summary' LIMIT 1`
-      )];
-
-      return Response.json({
-        summary: summaryRows[0]?.value || "",
-        messages,
-      });
-    }
-
-    if (url.pathname === "/message" && request.method === "POST") {
-      const body = await request.json();
-      const role = body?.role === "assistant" ? "assistant" : "user";
-      const content = String(body?.content || "").trim().slice(0, 20000);
-      if (!content) return Response.json({ ok: false }, { status: 400 });
-
-      this.ctx.storage.sql.exec(
-        `INSERT INTO messages
-          (role, content, mode, model, provider, route, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        role,
-        content,
-        String(body?.mode || "").slice(0, 32),
-        String(body?.model || "").slice(0, 160),
-        String(body?.provider || "").slice(0, 80),
-        String(body?.route || "").slice(0, 80),
-        Date.now()
-      );
-
-      this.ctx.storage.sql.exec(
-        `DELETE FROM messages
-         WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 160)`
-      );
-
-      return Response.json({ ok: true });
-    }
-
-    if (url.pathname === "/summary" && request.method === "POST") {
-      const body = await request.json();
-      const summary = String(body?.summary || "").trim().slice(0, 16000);
-      this.ctx.storage.sql.exec(
-        `INSERT INTO state(key, value, updated_at)
-         VALUES('summary', ?, ?)
-         ON CONFLICT(key) DO UPDATE SET
-           value = excluded.value,
-           updated_at = excluded.updated_at`,
-        summary,
-        Date.now()
-      );
-      return Response.json({ ok: true });
-    }
-
-    return new Response("Not found", { status: 404 });
-  }
-}
-
-export class NexusReasoningWorkflow extends WorkflowEntrypoint {
-  async run(event, step) {
-    const payload = event?.payload || event?.params || {};
-    const message = String(payload.message || "").trim().slice(0, 30000);
-    const history = cleanHistory(payload.history);
-    const memorySummary = String(payload.memorySummary || "").slice(0, 16000);
-    const sessionId = String(payload.sessionId || "").slice(0, 128);
-
-    const baseContext = [
-      memorySummary ? "MEMÓRIA:\n" + memorySummary : "",
-      history.length
-        ? "HISTÓRICO RECENTE:\n" +
-          history.map((m) => m.role.toUpperCase() + ": " + m.content).join("\n\n")
-        : "",
-    ].filter(Boolean).join("\n\n");
-
-    const plan = await step.do(
-      "plan",
-      {
-        retries: { limit: 2, delay: "2 seconds", backoff: "exponential" },
-        timeout: "3 minutes",
-      },
-      async () => {
-        const attempt = await runTextChat(
-          [
-            {
-              role: "system",
-              content:
-                "Você é o planner da NEXUS. Crie um plano curto e executável para responder com máxima qualidade. Identifique fatos a verificar, cálculos, suposições e possíveis falhas. Não responda ao usuário ainda.",
-            },
-            {
-              role: "user",
-              content: baseContext + "\n\nTAREFA:\n" + message,
-            },
-          ],
-          this.env,
-          {
-            cloudflareModel: CF_CODE_MODEL,
-            maxTokens: 900,
-            temperature: 0.2,
-            topP: 0.85,
-            sessionId: sessionId ? sessionId + "-plan" : "",
-            cloudflareOnly: Boolean(this.env.AI),
-          }
-        );
-        if (!attempt?.ok) throw new Error(parseProviderError(attempt?.raw || ""));
-        return {
-          text: extractModelText(attempt.raw),
-          model: attempt.model,
-          provider: attempt.provider,
-        };
-      }
-    );
-
-    const route = chooseChatRoute(message, "chat", null);
-
-    const draft = await step.do(
-      "draft",
-      {
-        retries: { limit: 2, delay: "2 seconds", backoff: "exponential" },
-        timeout: "5 minutes",
-      },
-      async () => {
-        const attempt = await runTextChat(
-          [
-            {
-              role: "system",
-              content: [
-                "Você é o executor principal da NEXUS.",
-                NEXUS_OPEN_BEHAVIOR,
-                "Siga o plano, mas corrija-o se notar erro.",
-                "Entregue uma resposta completa, precisa e útil.",
-                "Não mencione o processo interno de planejamento.",
-              ].join(" "),
-            },
-            {
-              role: "user",
-              content:
-                baseContext +
-                "\n\nPLANO INTERNO:\n" +
-                plan.text +
-                "\n\nTAREFA:\n" +
-                message,
-            },
-          ],
-          this.env,
-          {
-            cloudflareModel:
-              route.key === "code" ? CF_CODE_MODEL : CF_REASONING_MODEL,
-            maxTokens: Math.max(route.maxTokens || 2400, 3200),
-            temperature: 0.45,
-            topP: 0.92,
-            reasoningEffort: route.key === "code" ? undefined : "high",
-            sessionId: sessionId ? sessionId + "-draft" : "",
-            cloudflareOnly: Boolean(this.env.AI),
-          }
-        );
-        if (!attempt?.ok) throw new Error(parseProviderError(attempt?.raw || ""));
-        return {
-          text: extractModelText(attempt.raw),
-          model: attempt.model,
-          provider: attempt.provider,
-        };
-      }
-    );
-
-    const verification = await step.do(
-      "verify",
-      {
-        retries: { limit: 2, delay: "1 second", backoff: "exponential" },
-        timeout: "3 minutes",
-      },
-      async () => {
-        const attempt = await runTextChat(
-          [
-            {
-              role: "system",
-              content:
-                "Você é o verificador da NEXUS. Avalie a resposta contra o pedido. Procure erros factuais, contradições, partes não respondidas, invenções, raciocínio fraco e instruções que não foram seguidas. Responda SOMENTE JSON válido no formato {\"decision\":\"PASS|REPAIR|ESCALATE\",\"score\":0-100,\"issues\":[\"...\"],\"repair_instruction\":\"...\"}. PASS apenas se score >= 88.",
-            },
-            {
-              role: "user",
-              content:
-                "PEDIDO:\n" +
-                message +
-                "\n\nPLANO:\n" +
-                plan.text +
-                "\n\nRESPOSTA CANDIDATA:\n" +
-                draft.text,
-            },
-          ],
-          this.env,
-          {
-            cloudflareModel: CF_CODE_MODEL,
-            maxTokens: 700,
-            temperature: 0.05,
-            topP: 0.75,
-            sessionId: sessionId ? sessionId + "-verify" : "",
-            cloudflareOnly: Boolean(this.env.AI),
-          }
-        );
-        if (!attempt?.ok) {
-          return { decision: "PASS", score: 88, issues: [], repair_instruction: "" };
-        }
-        const parsed = parseLooseJson(extractModelText(attempt.raw));
-        return parsed || {
-          decision: "REPAIR",
-          score: 70,
-          issues: ["O verificador não produziu JSON confiável."],
-          repair_instruction: "Revise a resposta inteira e elimine possíveis erros ou omissões.",
-        };
-      }
-    );
-
-    let finalAnswer = draft;
-    let repaired = false;
-
-    if (
-      verification?.decision === "REPAIR" ||
-      verification?.decision === "ESCALATE" ||
-      Number(verification?.score || 0) < 88
-    ) {
-      finalAnswer = await step.do(
-        "repair",
-        {
-          retries: { limit: 2, delay: "2 seconds", backoff: "exponential" },
-          timeout: "5 minutes",
-        },
-        async () => {
-          const attempt = await runTextChat(
-            [
-              {
-                role: "system",
-                content: [
-                  "Você é o revisor final da NEXUS.",
-                  NEXUS_OPEN_BEHAVIOR,
-                  "Corrija todos os problemas apontados pelo verificador.",
-                  "Entregue apenas a resposta final ao usuário, sem expor planner, critic ou verifier.",
-                ].join(" "),
-              },
-              {
-                role: "user",
-                content:
-                  "PEDIDO:\n" +
-                  message +
-                  "\n\nRESPOSTA ANTERIOR:\n" +
-                  draft.text +
-                  "\n\nVERIFICAÇÃO:\n" +
-                  JSON.stringify(verification),
-              },
-            ],
-            this.env,
-            {
-              cloudflareModel: CF_REASONING_MODEL,
-              maxTokens: 3600,
-              temperature: 0.35,
-              topP: 0.9,
-              reasoningEffort: "high",
-              sessionId: sessionId ? sessionId + "-repair" : "",
-              cloudflareOnly: Boolean(this.env.AI),
-            }
-          );
-          if (!attempt?.ok) return draft;
-          return {
-            text: extractModelText(attempt.raw) || draft.text,
-            model: attempt.model,
-            provider: attempt.provider,
-          };
-        }
-      );
-      repaired = true;
-    }
-
-    await appendServerMessage(this.env, sessionId, {
-      role: "user",
-      content: message,
-      mode: "agent",
-      route: "workflow",
-    });
-    await appendServerMessage(this.env, sessionId, {
-      role: "assistant",
-      content: finalAnswer.text,
-      mode: "agent",
-      model: finalAnswer.model,
-      provider: finalAnswer.provider,
-      route: "workflow",
-    });
-
-    return {
-      answer: finalAnswer.text,
-      model: finalAnswer.model,
-      provider: finalAnswer.provider,
-      route: "agent-workflow",
-      repaired,
-      verification: {
-        decision: verification?.decision || "PASS",
-        score: Number(verification?.score || 0),
-        issues: Array.isArray(verification?.issues)
-          ? verification.issues.slice(0, 8)
-          : [],
-      },
-    };
-  }
-}
-
-async function handleAgentStart(request, env) {
-  if (!env.NEXUS_REASONING) {
-    return json({ error: "Workflow NEXUS_REASONING não está configurado." }, 503);
-  }
-
-  const body = await request.json();
-  const message = String(body.message || "").trim();
-  if (!message) return json({ error: "Mensagem vazia." }, 400);
-
-  const instance = await env.NEXUS_REASONING.create({
-    id: "nexus-" + crypto.randomUUID(),
-    params: {
-      message,
-      history: cleanHistory(body.history),
-      memorySummary: String(body.memorySummary || "").slice(0, 16000),
-      sessionId: String(body.sessionId || "").slice(0, 128),
-    },
-  });
-
-  return json({
-    id: instance.id,
-    details: await instance.status(),
-  }, 202);
-}
-
-async function handleAgentStatus(url, env) {
-  if (!env.NEXUS_REASONING) {
-    return json({ error: "Workflow NEXUS_REASONING não está configurado." }, 503);
-  }
-
-  const id = String(url.searchParams.get("id") || "").trim();
-  if (!id) return json({ error: "ID do workflow ausente." }, 400);
-
-  const instance = await env.NEXUS_REASONING.get(id);
-  const details = await instance.status();
-  return json({ id, details });
-}
-
 async function enforceRateLimit(request, env, pathname) {
   if (
     !pathname.startsWith("/api/") ||
@@ -2101,12 +1533,6 @@ export default {
 
       if (url.pathname === "/api/video" && request.method === "POST")
         return handleVideo(request, env);
-
-      if (url.pathname.startsWith("/api/tasks/") && request.method === "GET") {
-        const taskId = decodeURIComponent(url.pathname.slice("/api/tasks/".length));
-        if (!taskId) return json({ error: "taskId ausente." }, 400);
-        return handleTaskStatus(taskId, env);
-      }
 
       return env.ASSETS.fetch(request);
     } catch (error) {
