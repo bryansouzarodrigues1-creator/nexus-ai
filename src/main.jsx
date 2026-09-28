@@ -109,6 +109,10 @@ function wantsHighImageQuality(text){
   return /\b(máxima qualidade|maxima qualidade|ultra.?real|ultrareal|foto.?real|fotorreal|photoreal|high.?fidelity|cinemat|8k|4k|extremamente detalhad|qualidade máxima|qualidade maxima)\b/i.test(text);
 }
 
+function wantsHighVideoQuality(text){
+  return /\b(máxima qualidade|maxima qualidade|qualidade máxima|qualidade maxima|cinemat|high.?quality|high.?fidelity|mais qualidade|melhor qualidade|ultra.?real|fotorreal|photoreal)\b/i.test(String(text||''));
+}
+
 function isRichDocument(file){
   return /\.(pdf|docx|xlsx|xlsm|xlsb|xls|ods|odt|numbers)$/i.test(file?.name||'');
 }
@@ -515,7 +519,8 @@ function App(){
             sourceImage,
             previousPrompt,
             history:creativeHistory,
-            sessionId:tid
+            sessionId:tid,
+            quality:wantsHighVideoQuality(effectiveText)?'quality':'fast'
           })
         });
 
@@ -533,17 +538,23 @@ function App(){
         const videoMode=res.headers.get('x-nexus-video-mode')||'text-to-video';
         const model=res.headers.get('x-nexus-model')||'';
         const provider=res.headers.get('x-nexus-provider')||'';
-        const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
-        const promptModel=res.headers.get('x-nexus-prompt-model')||'';
+        const videoMethod=res.headers.get('x-nexus-video-method')||videoMode;
+        const videoQuality=res.headers.get('x-nexus-video-quality')||'fast';
+        const videoPlanned=res.headers.get('x-nexus-video-planned')==='1';
+        const videoFallbacks=Number(res.headers.get('x-nexus-video-fallbacks')||0);
 
         addMessage(tid,{
           role:'assistant',
-          content:videoMode==='image-to-video'?'Vídeo criado a partir da imagem de referência.':'Vídeo gerado.',
+          content:videoMode==='image-to-video'
+            ?'Vídeo criado a partir da imagem de referência.'
+            :'Vídeo gerado.',
           media,
           model,
           provider,
-          promptExpanded,
-          promptModel,
+          videoMethod,
+          videoQuality,
+          videoPlanned,
+          videoFallbacks,
           generationMode:videoMode
         });
       }else if(
@@ -685,7 +696,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.0</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.1</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -732,7 +743,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
