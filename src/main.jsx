@@ -218,6 +218,36 @@ function App(){
     return {type,key,url:URL.createObjectURL(blob)};
   }
 
+  async function pollTask(taskId,timeoutMs=120000){
+    const started=Date.now();
+    let delay=900;
+
+    while(Date.now()-started<timeoutMs){
+      const res=await fetch('/api/tasks/'+encodeURIComponent(taskId),{
+        headers:{'x-nexus-client':getClientId()}
+      });
+      const data=await res.json();
+
+      if(!res.ok)throw new Error(data.error||'Falha ao consultar tarefa.');
+
+      if(data.status==='complete'){
+        return data.output||{};
+      }
+
+      if(data.status==='errored'||data.status==='terminated'){
+        throw new Error(
+          data.error?.message||
+          'A tarefa de raciocínio não conseguiu terminar.'
+        );
+      }
+
+      await new Promise(resolve=>setTimeout(resolve,delay));
+      delay=Math.min(1800,delay+150);
+    }
+
+    throw new Error('O raciocínio demorou além do limite de espera.');
+  }
+
   async function refreshMemoryIfNeeded(tid,current){
     const messages=current?.messages||[];
     const previousSummary=current?.summary||'';
@@ -503,10 +533,24 @@ function App(){
           })
         });
 
-        const data=await res.json();
+        let data=await res.json();
+
+        if(res.status===202&&data.async&&data.taskId){
+          const workflowOutput=await pollTask(data.taskId);
+          data={
+            answer:workflowOutput.answer||'A tarefa terminou sem resposta.',
+            model:workflowOutput.model||'',
+            provider:workflowOutput.provider||'cloudflare-workflow',
+            route:'deep-workflow',
+            routeReason:data.routeReason||'raciocínio profundo durável',
+            workflow:workflowOutput
+          };
+        }
+
         if(data.documentContext&&activeAttachment?.kind==='document'){
           updateMessage(tid,user.id,{attachmentText:data.documentContext});
         }
+
         addMessage(tid,{
           role:'assistant',
           content:data.answer||data.error||'O motor ainda não está configurado.',
@@ -514,7 +558,8 @@ function App(){
           model:data.model||'',
           provider:data.provider||'',
           route:data.route||'',
-          routeReason:data.routeReason||''
+          routeReason:data.routeReason||'',
+          workflow:data.workflow||null
         });
       }
     }catch(e){
@@ -555,7 +600,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v1.2</span></div>
+        <div><strong>NEXUS AI</strong><span>v1.3</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
