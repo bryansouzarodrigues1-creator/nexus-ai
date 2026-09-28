@@ -1,4 +1,4 @@
-# NEXUS AI v2.3
+# NEXUS AI v2.4
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -235,6 +235,39 @@ Bindings nativos protegem a franquia:
 - limite agregado de uso de IA.
 
 O frontend usa um UUID anônimo local apenas para controle de abuso.
+
+## Core Focus V2.4
+
+A V2.4 prioriza os recursos de melhor custo/benefício para uso próprio:
+
+- chat e raciocínio;
+- pesquisa;
+- arquivos;
+- visão;
+- geração e edição de imagens;
+- Learning Loop.
+
+### Vídeo
+
+A infraestrutura de vídeo V2.3 foi preservada, mas fica **desativada por padrão** para evitar gasto acidental.
+
+Mesmo com chaves configuradas, `POST /api/video` só gera vídeo quando:
+
+```text
+VIDEO_ENABLED=1
+```
+
+Sem essa flag, o backend recusa a geração antes de chamar qualquer provider.
+
+A aba Vídeo continua visível como recurso futuro.
+
+### Codex
+
+A interface reserva uma aba **Codex · Futuro**.
+
+Nenhuma API de coding dedicada é chamada nessa fase. Programação continua disponível pelo chat/agente atual usando a infraestrutura já existente.
+
+A ideia futura é criar um agente de código completo com leitura de projeto, edição, execução, testes e reparo, mas somente quando custo e infraestrutura justificarem.
 
 ## Video Provider Pool V2.3
 
