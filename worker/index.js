@@ -4,7 +4,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.3.0";
+const VERSION = "2.4.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -483,9 +483,11 @@ async function searchWeb(query, env) {
 }
 
 async function handleStatus(env) {
+  const videoEnabled = String(env.VIDEO_ENABLED || "").trim() === "1";
   return json({
     ok: true,
     version: VERSION,
+    focusMode: "core-text-image-files-learning",
     behaviorMode: "open-contextual",
     architecture: {
       durableConversationState: Boolean(env.CONVERSATIONS),
@@ -512,9 +514,12 @@ async function handleStatus(env) {
       image: Boolean(env.AI || env.HF_TOKEN),
       imageEdit: Boolean(env.AI || env.HF_TOKEN),
       video: Boolean(
-        env.HF_TOKEN ||
-        env.WAVESPEED_API_KEY ||
-        env.NOVITA_API_KEY
+        videoEnabled &&
+        (
+          env.HF_TOKEN ||
+          env.WAVESPEED_API_KEY ||
+          env.NOVITA_API_KEY
+        )
       ),
       videoProviders: {
         huggingface: Boolean(env.HF_TOKEN),
@@ -525,6 +530,8 @@ async function handleStatus(env) {
       agentWorkflow: Boolean(env.NEXUS_AGENT),
       learning: Boolean(env.CONVERSATIONS),
       videoProviderPool: true,
+      videoEnabled,
+      codexEnabled: false,
     },
     models: {
       chatGeneral: env.CF_GENERAL_MODEL || CF_GENERAL_MODEL,
@@ -2822,6 +2829,18 @@ async function generateImageVideo(client, {
 }
 
 async function handleVideo(request, env) {
+  if (String(env.VIDEO_ENABLED || "").trim() !== "1") {
+    return json(
+      {
+        error:
+          "Geração de vídeo está pausada nesta fase da NEXUS para evitar custos altos. A infraestrutura foi preservada para reativação futura.",
+        error_kind: "feature-paused",
+        feature: "video",
+      },
+      503
+    );
+  }
+
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
   const history = cleanHistory(body.history);
