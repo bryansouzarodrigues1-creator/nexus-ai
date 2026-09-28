@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X} from 'lucide-react';
+import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown} from 'lucide-react';
 import './styles.css';
 
 const starterActions=[
@@ -119,6 +119,22 @@ function isRichDocument(file){
 
 function wantsAgentMode(text){
   return /(intensidade máxima|intensidade maxima|modo máximo|modo maximo|analise profundamente|análise profunda|investigue profundamente|investigue tudo|auditoria profunda|arquitetura completa|diagnóstico profundo|diagnostico profundo|compare em detalhes|monte um plano completo|raciocine profundamente|pense muito|complexidade máxima|complexidade maxima)/i.test(String(text||""));
+}
+
+function detectNaturalFeedback(text){
+  const value=String(text||'').trim();
+  if(/\b(nada a ver|não foi isso|nao foi isso|ficou ruim|ficou péssim|ficou pesssim|está errado|esta errado|tá errado|ta errado|errou|péssimo|pessimo|horrível|horrivel|não gostei|nao gostei|mudou demais|perdeu a referência|perdeu a referencia)\b/i.test(value))return 'negative';
+  if(/\b(agora sim|perfeito|ficou perfeito|ficou ótimo|ficou otimo|muito bom|excelente|isso mesmo|era isso|acertou)\b/i.test(value))return 'positive';
+  return null;
+}
+
+function feedbackKindForMessage(message){
+  if(message?.media?.type==='image'||message?.generationMode==='edit'||message?.generationMode==='new')return 'image';
+  if(message?.media?.type==='video'||String(message?.generationMode||'').includes('video'))return 'video';
+  if(message?.route==='agent')return 'agent';
+  if(message?.route==='search')return 'search';
+  if(message?.route==='code')return 'code';
+  return 'chat';
 }
 
 function sleep(ms){
@@ -241,6 +257,97 @@ function App(){
       ...t,
       messages:t.messages.map(m=>m.id===msgId?{...m,...patch}:m)
     }:t));
+  }
+
+  async function sendLearningFeedback({
+    tid,
+    message,
+    messageIndex,
+    signal,
+    note=''
+  }){
+    const current=threads.find(t=>t.id===tid);
+    const messages=current?.messages||[];
+    const previousUser=[...messages.slice(0,messageIndex)].reverse().find(m=>m.role==='user');
+    const payload={
+      sessionId:tid,
+      kind:feedbackKindForMessage(message),
+      signal,
+      prompt:previousUser?.content||'',
+      outputPreview:message?.content||'',
+      note,
+      provider:message?.provider||'',
+      model:message?.model||'',
+      route:message?.route||message?.generationMode||'',
+      score:Number.isFinite(message?.visualScore)
+        ?message.visualScore
+        :Number.isFinite(message?.verificationScore)
+          ?message.verificationScore
+          :null,
+      meta:{
+        generationMode:message?.generationMode||null,
+        retries:Number(message?.visualRetry||message?.videoFallbacks||0)
+      }
+    };
+
+    try{
+      const res=await fetch('/api/feedback',{
+        method:'POST',
+        headers:apiHeaders(),
+        body:JSON.stringify(payload)
+      });
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(data.error||'Falha ao salvar feedback.');
+      updateMessage(tid,message.id,{
+        feedback:signal,
+        feedbackLessonStored:Boolean(data.lessonStored)
+      });
+      return data;
+    }catch{
+      updateMessage(tid,message.id,{feedbackError:true});
+      return null;
+    }
+  }
+
+  async function submitMessageFeedback(message,messageIndex,signal){
+    if(!active||!message?.id)return;
+    let note='';
+    if(signal==='negative'){
+      note=window.prompt(
+        'O que ficou ruim? Isso é opcional, mas ajuda a NEXUS a aprender uma regra melhor.'
+      )||'';
+    }
+    await sendLearningFeedback({
+      tid:active,
+      message,
+      messageIndex,
+      signal,
+      note
+    });
+  }
+
+  function learnFromNaturalFeedback(tid,currentThread,text){
+    const signal=detectNaturalFeedback(text);
+    if(!signal)return;
+
+    const messages=currentThread?.messages||[];
+    let assistantIndex=-1;
+    for(let i=messages.length-1;i>=0;i--){
+      if(messages[i]?.role==='assistant'){
+        assistantIndex=i;
+        break;
+      }
+    }
+    if(assistantIndex<0)return;
+
+    const message=messages[assistantIndex];
+    void sendLearningFeedback({
+      tid,
+      message,
+      messageIndex:assistantIndex,
+      signal,
+      note:text
+    });
   }
 
   async function mediaAsDataUrl(msg){
@@ -399,6 +506,8 @@ function App(){
       setThreads(p=>[t,...p]);
       setActive(tid);
     }
+
+    learnFromNaturalFeedback(tid,currentThread,effectiveText);
 
     const activeAttachment=attachment;
     const attachedMedia=await prepareAttachmentMedia(activeAttachment);
@@ -696,7 +805,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.1</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.2</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -744,6 +853,19 @@ function App(){
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
                 {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.role==='assistant'&&<div className="feedback-row">
+                  <button
+                    className={m.feedback==='positive'?'active':''}
+                    title="Isso ficou bom — ensinar a NEXUS"
+                    onClick={()=>submitMessageFeedback(m,i,'positive')}
+                  ><ThumbsUp size={13}/></button>
+                  <button
+                    className={m.feedback==='negative'?'active negative':''}
+                    title="Isso ficou ruim — ensinar a NEXUS"
+                    onClick={()=>submitMessageFeedback(m,i,'negative')}
+                  ><ThumbsDown size={13}/></button>
+                  {m.feedbackLessonStored&&<span>lição aprendida</span>}
+                </div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
