@@ -583,7 +583,9 @@ function App(){
           provider:result.provider||'cloudflare',
           route:'agent',
           routeReason:'planner → solver → verifier'+(result.repaired?' → repair':''),
-          verificationScore:result.verification?.score??null
+          verificationScore:result.verification?.score??null,
+          toolCount:Array.isArray(result.tools)?result.tools.filter(t=>t?.ok).length:0,
+          agentRepaired:Boolean(result.repaired)
         });
       }else{
         const historyLimit=memoryState.summary?32:60;
@@ -683,7 +685,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v1.3</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.0</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -730,7 +732,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{typeof m.verificationScore==='number'?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{typeof m.visualScore==='number'?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{typeof m.verificationScore==='number'?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{typeof m.visualScore==='number'?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
