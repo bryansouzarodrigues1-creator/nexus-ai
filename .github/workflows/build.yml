@@ -4,15 +4,42 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
       - run: npm install
-      - run: npm run check
+
+      - name: Check Worker syntax
+        run: |
+          for file in worker/*.js; do
+            node --check "$file"
+          done
+
       - run: npm run build
-      - run: npx wrangler@4.141.0 deploy --dry-run --outdir .wrangler-dry
+
+      - name: Wrangler deploy dry-run
+        id: wrangler
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npx wrangler@4.141.0 deploy --dry-run --outdir .wrangler-dry 2>&1 | tee wrangler-dry-run.log
+
+      - name: Upload Wrangler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrangler-diagnostics
+          path: wrangler-dry-run.log
+          retention-days: 1
+
+      - name: Fail if Wrangler failed
+        if: steps.wrangler.outcome == 'failure'
+        run: exit 1
