@@ -2,14 +2,15 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown} from 'lucide-react';
+import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole} from 'lucide-react';
 import './styles.css';
 
 const starterActions=[
   {icon:Globe2,label:'Pesquisar na web',mode:'search'},
   {icon:FileText,label:'Analisar arquivo',mode:'file'},
   {icon:Image,label:'Criar imagem',mode:'image'},
-  {icon:Video,label:'Criar vídeo',mode:'video'},
+  {icon:Video,label:'Vídeo · futuro',mode:'video'},
+  {icon:Code2,label:'Codex · futuro',mode:'codex'},
 ];
 
 function id(){return crypto.randomUUID?.()||Math.random().toString(36).slice(2)}
@@ -509,6 +510,39 @@ function App(){
 
     learnFromNaturalFeedback(tid,currentThread,effectiveText);
 
+    if(requestMode==='video'||requestMode==='codex'){
+      const user={
+        id:id(),
+        role:'user',
+        content:effectiveText,
+        mode:requestMode,
+        media:null,
+        fileName:attachment?.name||null,
+        attachmentText:null
+      };
+
+      setThreads(p=>p.map(t=>t.id===tid?{
+        ...t,
+        title:t.messages.length?t.title:effectiveText.slice(0,40),
+        messages:[
+          ...t.messages,
+          user,
+          {
+            id:id(),
+            role:'assistant',
+            content:requestMode==='video'
+              ?'Vídeo está pausado por enquanto para proteger custos. A infraestrutura continua pronta para reativação futura.'
+              :'Codex está reservado como função futura. Por enquanto a NEXUS mantém programação pelo chat/agente atual, sem ativar uma API de coding dedicada.'
+          }
+        ]
+      }:t));
+
+      setInput('');
+      setAttachment(null);
+      setBusy(false);
+      return;
+    }
+
     const activeAttachment=attachment;
     const attachedMedia=await prepareAttachmentMedia(activeAttachment);
 
@@ -782,15 +816,16 @@ function App(){
     }
     setMode(m);
     if(m==='image'&&!input)setInput('Crie uma imagem de ');
-    if(m==='video'&&!input)setInput('Crie um vídeo de ');
     if(m==='search')setInput('');
+    if(m==='video'||m==='codex')setInput('');
   }
 
   const modeLabel={
     chat:'Chat',
     search:'Pesquisa web',
     image:hasImage||attachment?.kind==='image'?'Imagem • continuidade':'Imagem',
-    video:hasImage||attachment?.kind==='image'?'Vídeo • imagem de referência':'Vídeo'
+    video:'Vídeo · futuro',
+    codex:'Codex · futuro'
   }[mode]||'Chat';
 
   return <div className="app">
@@ -805,7 +840,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.3</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.4</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -827,17 +862,32 @@ function App(){
           <button className={mode==='chat'?'sel':''} onClick={()=>setMode('chat')}>Chat</button>
           <button className={mode==='search'?'sel':''} onClick={()=>setMode('search')}><Search size={14}/> Pesquisar</button>
           <button className={mode==='image'?'sel':''} onClick={()=>setMode('image')}><Image size={14}/> Imagem</button>
-          <button className={mode==='video'?'sel':''} onClick={()=>setMode('video')}><Video size={14}/> Vídeo</button>
+          <button className={mode==='video'?'sel future-tab':''} onClick={()=>setMode('video')}><Video size={14}/> Vídeo <small>Futuro</small></button>
+          <button className={mode==='codex'?'sel future-tab':''} onClick={()=>setMode('codex')}><Code2 size={14}/> Codex <small>Futuro</small></button>
         </div>
         <span className="cloud">☁ nuvem</span>
       </header>
 
       <section className="chat">
-        {!thread?.messages?.length
+        {(mode==='video'||mode==='codex')
+          ?<div className="future-feature">
+            <div className="future-icon">{mode==='video'?<Video/>:<Code2/>}</div>
+            <span className="future-badge"><LockKeyhole size={12}/> Futuro</span>
+            <h2>{mode==='video'?'Geração de vídeo':'Codex / Agente de código'}</h2>
+            <p>
+              {mode==='video'
+                ?'A infraestrutura foi preservada, mas a geração está pausada por enquanto porque o custo por teste ainda é alto.'
+                :'A aba está reservada para um agente de programação mais completo. O chat atual continua capaz de analisar e escrever código sem ativar uma API dedicada mais cara.'}
+            </p>
+            <div className="future-note">
+              Foco da versão atual: <strong>texto + imagens + arquivos + Learning Loop</strong>.
+            </div>
+          </div>
+          :!thread?.messages?.length
           ?<div className="hero">
             <div className="hero-orb"><Sparkles/></div>
             <h1>O que vamos descobrir?</h1>
-            <p>Chat inteligente, pesquisa web, visão, documentos, imagem e vídeo em uma única interface.</p>
+            <p>Foco atual: chat inteligente, pesquisa, arquivos, visão, imagens e aprendizado contínuo. Vídeo e Codex ficam preparados para uma fase futura.</p>
             <div className="actions">
               {starterActions.map(({icon:Icon,label,mode:m})=><button key={label} onClick={()=>chooseTool(m)}><Icon size={18}/>{label}</button>)}
             </div>
@@ -876,7 +926,7 @@ function App(){
         }
       </section>
 
-      <div className="composer-wrap">
+      {mode!=='video'&&mode!=='codex'&&<div className="composer-wrap">
         <div className="composer">
           {attachment&&<div className="attachment-chip">
             {attachment.kind==='image'
@@ -901,7 +951,7 @@ function App(){
           </div>
         </div>
         <small>Processamento pesado na nuvem. Seu dispositivo apenas envia e exibe os resultados.</small>
-      </div>
+      </div>}
     </main>
   </div>
 }
