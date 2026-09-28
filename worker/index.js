@@ -349,6 +349,155 @@ async function handleFeedback(request, env) {
   });
 }
 
+async function handleLearningStatus(env) {
+  const stub = learningStub(env);
+  if (!stub) {
+    return json(
+      {
+        error: "Learning Store indisponível.",
+        learningAvailable: false,
+      },
+      503
+    );
+  }
+
+  try {
+    const snapshot = await stub.getSnapshot();
+    const stats = Object.values(
+      snapshot?.modelStats &&
+      typeof snapshot.modelStats === "object"
+        ? snapshot.modelStats
+        : {}
+    )
+      .map((item) => {
+        const positive = Number(item?.positive || 0);
+        const negative = Number(item?.negative || 0);
+        const explicitTotal = positive + negative;
+        const outcomeCount = Number(
+          item?.outcomeCount ??
+          item?.count ??
+          0
+        );
+        const success = Number(item?.success || 0);
+        const operationalFailures = Number(
+          item?.operationalFailures || 0
+        );
+
+        return {
+          kind: String(item?.kind || "general"),
+          provider: String(item?.provider || ""),
+          model: String(item?.model || ""),
+          count: Number(item?.count || 0),
+          outcomeCount,
+          success,
+          failure: Number(item?.failure || 0),
+          operationalFailures,
+          qualityFailures: Number(item?.qualityFailures || 0),
+          positive,
+          negative,
+          successRate:
+            outcomeCount > 0
+              ? success / outcomeCount
+              : null,
+          reliabilityRate:
+            success + operationalFailures > 0
+              ? success /
+                (success + operationalFailures)
+              : null,
+          explicitApproval:
+            explicitTotal > 0
+              ? positive / explicitTotal
+              : null,
+          avgScore:
+            Number(item?.scoreCount || 0) > 0
+              ? Number(item?.avgScore || 0)
+              : null,
+          scoreCount: Number(item?.scoreCount || 0),
+          avgLatencyMs:
+            Number(item?.latencyCount || 0) > 0
+              ? Number(item?.avgLatencyMs || 0)
+              : null,
+          latencyCount: Number(item?.latencyCount || 0),
+          retries: Number(item?.retries || 0),
+          lastFailureKind:
+            String(item?.lastFailureKind || ""),
+          updatedAt: Number(item?.updatedAt || 0),
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.updatedAt - a.updatedAt ||
+          b.count - a.count
+      )
+      .slice(0, 40);
+
+    const lessons = (
+      Array.isArray(snapshot?.lessons)
+        ? snapshot.lessons
+        : []
+    )
+      .slice()
+      .sort(
+        (a, b) =>
+          Number(b?.at || 0) -
+          Number(a?.at || 0)
+      )
+      .slice(0, 30)
+      .map((item) => ({
+        taskType: String(item?.taskType || "general"),
+        trigger: String(item?.trigger || ""),
+        guidance: String(item?.guidance || ""),
+        confidence: Number(item?.confidence || 0),
+        source: String(item?.source || ""),
+        signal: String(item?.signal || "neutral"),
+        at: Number(item?.at || 0),
+      }));
+
+    const providerHealth =
+      snapshot?.providerHealth &&
+      typeof snapshot.providerHealth === "object"
+        ? Object.values(snapshot.providerHealth)
+            .map((item) => ({
+              provider: String(item?.provider || ""),
+              status: String(item?.status || ""),
+              kind: String(item?.kind || ""),
+              cooldownUntil: Number(item?.cooldownUntil || 0),
+              failures: Number(item?.failures || 0),
+              successes: Number(item?.successes || 0),
+              updatedAt: Number(item?.updatedAt || 0),
+            }))
+            .sort(
+              (a, b) =>
+                b.updatedAt - a.updatedAt
+            )
+        : [];
+
+    return json({
+      ok: true,
+      version: VERSION,
+      learningAvailable: true,
+      adaptiveRouter: true,
+      summary: {
+        modelStats: stats.length,
+        lessons: lessons.length,
+        providersTracked: providerHealth.length,
+      },
+      modelStats: stats,
+      lessons,
+      providerHealth,
+    });
+  } catch (error) {
+    return json(
+      {
+        error: "Não consegui ler o Learning Store.",
+        provider_error:
+          error?.message || String(error),
+      },
+      500
+    );
+  }
+}
+
 async function handleAgentStart(request, env) {
   if (!env.NEXUS_AGENT) {
     return json({ error: "Workflow de agente não configurado." }, 503);
@@ -3383,6 +3532,7 @@ async function enforceRateLimit(request, env, pathname) {
   if (
     !pathname.startsWith("/api/") ||
     pathname === "/api/status" ||
+    pathname === "/api/learning/status" ||
     (request.method === "GET" && pathname.startsWith("/api/agent/"))
   ) {
     return null;
@@ -3456,6 +3606,9 @@ export default {
 
       if (url.pathname === "/api/feedback" && request.method === "POST")
         return handleFeedback(request, env);
+
+      if (url.pathname === "/api/learning/status" && request.method === "GET")
+        return handleLearningStatus(env);
 
       if (url.pathname === "/api/agent/start" && request.method === "POST")
         return handleAgentStart(request, env);
