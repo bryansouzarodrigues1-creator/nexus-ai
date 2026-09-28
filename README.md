@@ -1,4 +1,4 @@
-# NEXUS AI v2.1
+# NEXUS AI v2.2
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -46,6 +46,52 @@ Ele guarda:
 - perfil técnico da conversa.
 
 IndexedDB continua sendo usado no navegador para mídia local, mas a inteligência da conversa não depende somente do cliente.
+
+## Learning Loop V2.2
+
+A V2.2 adiciona aprendizado persistente no nível do sistema.
+
+Isso NÃO altera os pesos dos modelos base. O aprendizado acontece por memória, feedback, métricas, recuperação de lições e adaptação dos planners.
+
+O Learning Store global guarda:
+- feedback positivo/negativo;
+- lições reutilizáveis;
+- desempenho por task/provider/model;
+- taxa de sucesso;
+- aprovação explícita;
+- score médio;
+- quantidade de retries;
+- latência recente.
+
+Fontes de aprendizado:
+- botões 👍 / 👎 na UI;
+- correções naturais como "não foi isso", "ficou ruim", "nada a ver";
+- sinais positivos como "agora sim", "perfeito", "isso mesmo";
+- scores do Visual Verifier;
+- resultados de chat, agente, imagem e vídeo;
+- falhas e fallbacks dos providers.
+
+Quando existe feedback textual, um modelo extrai uma regra curta e generalizável antes de armazená-la. Ele é instruído a não guardar tokens, senhas ou detalhes pessoais sem valor geral.
+
+Chat, agente, edição de imagem e Video Planner recuperam lições anteriores antes de executar novas tarefas.
+
+O Visual Verifier também pode gerar automaticamente uma lição quando uma edição falha de forma material.
+
+Exemplo:
+
+```text
+edição troca o rosto
+      ↓
+Visual Verifier detecta
+      ↓
+lição persistente
+      ↓
+próxima edição semelhante
+      ↓
+Edit Planner recebe a regra antes de gerar
+```
+
+O próximo nível futuro é transformar dados aprovados em dataset limpo para LoRA/fine-tuning. Isso ainda não faz parte da V2.2.
 
 ## Agente durável
 
@@ -214,10 +260,12 @@ fallbacks controlados
 MP4
 ```
 
-Modelos padrão:
-- rápido: `Lightricks/LTX-Video-0.9.8-13B-distilled`
-- qualidade: `tencent/HunyuanVideo`
-- fallback legado: `Wan-AI/Wan2.1-T2V-1.3B`
+Modelo text-to-video padrão:
+- `tencent/HunyuanVideo`
+
+A V2.1.1 removeu LTX 0.9.8 13B e Wan 2.1 1.3B da lista automática de text-to-video depois de detectar incompatibilidades reais no provider Fal.
+
+Modelos T2V adicionais só entram automaticamente quando configurados explicitamente por variável de ambiente.
 
 O provider padrão é `auto`, podendo ser sobrescrito por `HF_VIDEO_PROVIDER`.
 
@@ -243,9 +291,10 @@ image-to-video
 Wan I2V
 ```
 
-Modelos padrão:
-- principal: `Lightricks/LTX-Video`
-- fallback: `Wan-AI/Wan2.1-I2V-14B-720P`
+Modelo padrão:
+- `Lightricks/LTX-Video-0.9.8-13B-distilled`
+
+A V2.1.1 usa o task `imageToVideo` diretamente, incluindo o prompt como parâmetro. Um fallback I2V adicional só é usado se for configurado explicitamente.
 
 Regra importante: se todos os modelos condicionados pela imagem falharem, a NEXUS retorna erro.
 
@@ -289,6 +338,7 @@ Vídeo depende de infraestrutura GPU externa disponível através do provedor co
 - `GET /api/status`
 - `POST /api/chat`
 - `POST /api/memory`
+- `POST /api/feedback`
 - `POST /api/agent/start`
 - `GET /api/agent/:id`
 - `POST /api/image`
