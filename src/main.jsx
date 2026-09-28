@@ -113,6 +113,43 @@ function isRichDocument(file){
   return /\.(pdf|docx|xlsx|xlsm|xlsb|xls|ods|odt|numbers)$/i.test(file?.name||'');
 }
 
+function wantsAgentMode(text){
+  return /(intensidade máxima|intensidade maxima|modo máximo|modo maximo|analise profundamente|análise profunda|investigue profundamente|investigue tudo|auditoria profunda|arquitetura completa|diagnóstico profundo|diagnostico profundo|compare em detalhes|monte um plano completo|raciocine profundamente|pense muito|complexidade máxima|complexidade maxima)/i.test(String(text||""));
+}
+
+function sleep(ms){
+  return new Promise(resolve=>setTimeout(resolve,ms));
+}
+
+async function waitForAgent(taskId){
+  const deadline=Date.now()+120000;
+  while(Date.now()<deadline){
+    const res=await fetch('/api/agent/'+encodeURIComponent(taskId),{
+      headers:{'x-nexus-client':getClientId()}
+    });
+    const data=await res.json();
+
+    if(!res.ok){
+      throw new Error(data.error||data.provider_error||'Falha ao consultar o agente.');
+    }
+
+    if(data.status==='complete'){
+      return data.output||{};
+    }
+
+    if(data.status==='errored'||data.status==='terminated'){
+      throw new Error(
+        data.error?.message||
+        'O agente não conseguiu concluir a tarefa.'
+      );
+    }
+
+    await sleep(1400);
+  }
+
+  throw new Error('A tarefa profunda continua processando por mais tempo que o esperado. Tente consultar novamente em instantes.');
+}
+
 function detectExplicitMediaIntent(text){
   const value=String(text||'').trim();
 
@@ -502,6 +539,45 @@ function App(){
           promptModel,
           generationMode:videoMode
         });
+      }else if(
+        requestMode==='chat' &&
+        wantsAgentMode(effectiveText) &&
+        status?.providers?.agentWorkflow
+      ){
+        const historyLimit=memoryState.summary?32:60;
+        const history=(currentThread?.messages||[])
+          .filter(m=>(m.role==='user'||m.role==='assistant')&&typeof m.content==='string')
+          .slice(-historyLimit)
+          .map(m=>({
+            role:m.role,
+            content:m.content+(m.attachmentText?'\n\nConteúdo do arquivo '+(m.fileName||'anexado')+':\n'+m.attachmentText:'')
+          }));
+
+        const startRes=await fetch('/api/agent/start',{
+          method:'POST',
+          headers:apiHeaders(),
+          body:JSON.stringify({
+            message:effectiveText,
+            history,
+            sessionId:tid,
+            memorySummary:memoryState.summary||''
+          })
+        });
+        const started=await startRes.json();
+        if(!startRes.ok){
+          throw new Error(started.error||started.provider_error||'Falha ao iniciar o agente.');
+        }
+
+        const result=await waitForAgent(started.id);
+        addMessage(tid,{
+          role:'assistant',
+          content:result.answer||'O agente concluiu sem retornar texto.',
+          model:result.model||'@cf/openai/gpt-oss-120b',
+          provider:result.provider||'cloudflare',
+          route:'agent',
+          routeReason:'planner → solver → verifier'+(result.repaired?' → repair':''),
+          verificationScore:result.verification?.score??null
+        });
       }else{
         const historyLimit=memoryState.summary?32:60;
         const history=(currentThread?.messages||[])
@@ -647,7 +723,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{typeof m.verificationScore==='number'?' · verificação '+Math.round(m.verificationScore*100)+'%':''}</div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
                 </div>}
