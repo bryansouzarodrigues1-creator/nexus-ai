@@ -29,3 +29,11 @@ video.generated{width:min(720px,100%)}
 .markdown table{display:block;max-width:100%;overflow:auto;border-collapse:collapse;margin:12px 0}
 .markdown th,.markdown td{border:1px solid #2a303b;padding:7px 10px;text-align:left}.markdown th{background:#141820}
 .plain-content{white-space:pre-wrap}
+
+
+.feedback-row{display:flex;align-items:center;gap:5px;margin-top:7px;min-height:24px}
+.feedback-row button{width:27px;height:27px;border:1px solid #252a34;background:#11141a;color:#6f7787;border-radius:8px;display:grid;place-items:center;cursor:pointer;transition:.15s}
+.feedback-row button:hover{color:#d8dce5;border-color:#39404e;background:#171b22}
+.feedback-row button.active{color:#74d99f;border-color:#2d6a4d;background:#10251b}
+.feedback-row button.active.negative{color:#ff8c8c;border-color:#6e3434;background:#2a1416}
+.feedback-row span{font-size:10px;color:#6f7787;margin-left:3px}
