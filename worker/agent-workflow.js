@@ -834,6 +834,29 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
             escalated,
             repaired,
             verification,
+            tools: output.tools,
+          },
+        });
+
+        await state.recordMetric({
+          type: "agent",
+          route: "planner-solver-critic-verifier",
+          provider: "cloudflare-workflow",
+          model: finalModel,
+          ok: verification?.pass !== false,
+          meta: {
+            verificationScore: verification?.score ?? null,
+            criticScore: critique?.score ?? null,
+            escalated,
+            repaired,
+            toolsRequested: plannedTools.length,
+            toolsSucceeded: toolResults.filter((result) => result?.ok).length,
+            toolsFailed: toolResults
+              .filter((result) => !result?.ok)
+              .map((result) => ({
+                name: result?.name || "",
+                error: String(result?.error || "").slice(0, 300),
+              })),
           },
         });
 
