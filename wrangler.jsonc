@@ -2,11 +2,35 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "nexus-ai",
   "main": "worker/index.js",
-  "compatibility_date": "2026-09-27",
+  "compatibility_date": "2026-09-28",
   "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
   "ai": {
     "binding": "AI"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONVERSATION_STATE",
+        "class_name": "NexusConversationState"
+      }
+    ]
+  },
+  "exports": {
+    "NexusConversationState": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "workflows": [
+    {
+      "name": "nexus-reasoning",
+      "binding": "NEXUS_REASONING",
+      "class_name": "NexusReasoningWorkflow"
+    }
+  ],
   "ratelimits": [
     {
       "name": "AI_RATE_LIMITER",
