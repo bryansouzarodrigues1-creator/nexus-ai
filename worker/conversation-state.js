@@ -528,6 +528,16 @@ export class ConversationState extends DurableObject {
         ? Math.max(0, Math.min(20, Math.round(Number(caseData.exactTextTotal))))
         : null,
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
+      retryClass: cleanText(caseData.retryClass || "", 40),
+      retryEditStrength:
+        Number.isFinite(Number(caseData.retryEditStrength))
+          ? Math.max(0, Math.min(1, Number(caseData.retryEditStrength)))
+          : null,
+      candidateArenaUsed: Boolean(caseData.candidateArenaUsed),
+      selectedImageQuality:
+        /^(fast|quality)$/.test(cleanText(caseData.selectedImageQuality || "", 20))
+          ? cleanText(caseData.selectedImageQuality, 20)
+          : "",
       rootReferenceUsed: Boolean(caseData.rootReferenceUsed),
       extraReferencesUsed: Math.max(
         0,
@@ -649,6 +659,15 @@ export class ConversationState extends DurableObject {
         referenceLeakageRisk:
           item.referenceLeakageRisk,
         retries: Number(item.retries || 0),
+        retryClass: String(item.retryClass || ""),
+        retryEditStrength:
+          Number.isFinite(Number(item.retryEditStrength))
+            ? Number(item.retryEditStrength)
+            : null,
+        candidateArenaUsed:
+          Boolean(item.candidateArenaUsed),
+        selectedImageQuality:
+          String(item.selectedImageQuality || ""),
         rootReferenceUsed: Boolean(item.rootReferenceUsed),
         extraReferencesUsed: Number(item.extraReferencesUsed || 0),
         autoApprovedReferencesUsed:
