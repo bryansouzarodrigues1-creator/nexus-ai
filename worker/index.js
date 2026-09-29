@@ -12,6 +12,10 @@ import {
   formatReferencePlan,
 } from "./reference-intelligence.js";
 import {
+  scoreExactTextRequirements,
+  fuseReferenceCompliance,
+} from "./image-quality-gate.js";
+import {
   extractExactRequestedText,
   inferNaturalAspectRatio,
 } from "./image-task-core.js";
@@ -2609,12 +2613,13 @@ async function verifyVisualEdit({
 
   const schemaInstruction = [
     "Retorne SOMENTE JSON válido:",
-    "{pass:boolean,score:number,identity:number,composition:number,backgroundPreservation:number,stylePreservation:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,unwantedChanges:string[],issues:string[],retryInstruction:string}.",
+    "{pass:boolean,score:number,identity:number,composition:number,backgroundPreservation:number,stylePreservation:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,observedText:string[],unwantedChanges:string[],issues:string[],retryInstruction:string}.",
     "Todos os scores vão de 0 a 1.",
     "Avalie a IMAGEM ORIGINAL contra o RESULTADO, não apenas estética isolada.",
     "Mudanças não solicitadas reduzem fortemente o score.",
     "Se preservationLevel=maximum, identidade/composição/fundo/estilo devem ser tratados com rigor.",
     "textAccuracy mede fidelidade de texto existente ou solicitado; se não houver texto relevante, use 1.",
+    "observedText deve transcrever literalmente todo texto legível relevante para o pedido. Não corrija ortografia, acentos, números, caixa ou pontuação.",
   ].join(" ");
 
   let attempt = null;
@@ -2759,10 +2764,18 @@ async function verifyVisualEdit({
   const stylePreservation = clamp(parsed?.stylePreservation, score);
   const requestFulfillment = clamp(parsed?.requestFulfillment, score);
   const artifactFree = clamp(parsed?.artifactFree, score);
-  const textAccuracy = clamp(
+  const modelTextAccuracy = clamp(
     parsed?.textAccuracy,
     taskPlan?.requiresTextAccuracy ? score : 1
   );
+  const observedText = cleanStringArray(parsed?.observedText, 24, 500);
+  const deterministicText = scoreExactTextRequirements(
+    taskPlan?.requestedText || [],
+    observedText
+  );
+  const textAccuracy = deterministicText.applicable
+    ? Math.min(modelTextAccuracy, deterministicText.score)
+    : modelTextAccuracy;
   const realism = clamp(parsed?.realism, artifactFree);
 
   const strict = taskPlan?.preservationLevel === "maximum";
@@ -2776,7 +2789,16 @@ async function verifyVisualEdit({
     (!strict || composition >= 0.8) &&
     (!strict || backgroundPreservation >= 0.78) &&
     (!strict || stylePreservation >= 0.78) &&
-    (!taskPlan?.requiresTextAccuracy || textAccuracy >= 0.82);
+    (
+      !taskPlan?.requiresTextAccuracy ||
+      (
+        textAccuracy >= 0.9 &&
+        (
+          !deterministicText.applicable ||
+          deterministicText.exactMatches === deterministicText.total
+        )
+      )
+    );
 
   return {
     verified: true,
@@ -2789,6 +2811,13 @@ async function verifyVisualEdit({
     requestFulfillment,
     artifactFree,
     textAccuracy,
+    deterministicTextAccuracy:
+      deterministicText.applicable ? deterministicText.score : null,
+    exactTextMatches:
+      deterministicText.applicable ? deterministicText.exactMatches : null,
+    exactTextTotal:
+      deterministicText.applicable ? deterministicText.total : null,
+    observedText,
     realism,
     retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
     issues: cleanStringArray(parsed?.issues, 14),
@@ -2829,8 +2858,9 @@ async function verifyGeneratedImageV2({
 
   const schema = [
     "Retorne SOMENTE JSON válido:",
-    "{pass:boolean,score:number,composition:number,styleMatch:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,issues:string[],retryInstruction:string}.",
+    "{pass:boolean,score:number,composition:number,styleMatch:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,observedText:string[],issues:string[],retryInstruction:string}.",
     "Todos os scores vão de 0 a 1.",
+    "observedText deve transcrever literalmente texto relevante que aparece na imagem, sem corrigir ortografia, acentos, números, caixa ou pontuação.",
     "Avalie se a imagem cumpre exatamente o pedido, não apenas se é bonita.",
     "Penalize anatomia incoerente, elementos duplicados, texto ilegível/incorreto, objetos não pedidos, composição ruim e estilo divergente.",
     taskPlan?.requiresTextAccuracy
@@ -2938,10 +2968,18 @@ async function verifyGeneratedImageV2({
   const stylePreservation = clamp(parsed?.styleMatch, score);
   const requestFulfillment = clamp(parsed?.requestFulfillment, score);
   const artifactFree = clamp(parsed?.artifactFree, score);
-  const textAccuracy = clamp(
+  const modelTextAccuracy = clamp(
     parsed?.textAccuracy,
     taskPlan?.requiresTextAccuracy ? score : 1
   );
+  const observedText = cleanStringArray(parsed?.observedText, 24, 500);
+  const deterministicText = scoreExactTextRequirements(
+    taskPlan?.requestedText || [],
+    observedText
+  );
+  const textAccuracy = deterministicText.applicable
+    ? Math.min(modelTextAccuracy, deterministicText.score)
+    : modelTextAccuracy;
   const realism = clamp(parsed?.realism, artifactFree);
 
   const pass =
@@ -2949,7 +2987,16 @@ async function verifyGeneratedImageV2({
     requestFulfillment >= 0.78 &&
     artifactFree >= 0.72 &&
     composition >= 0.68 &&
-    (!taskPlan?.requiresTextAccuracy || textAccuracy >= 0.82);
+    (
+      !taskPlan?.requiresTextAccuracy ||
+      (
+        textAccuracy >= 0.9 &&
+        (
+          !deterministicText.applicable ||
+          deterministicText.exactMatches === deterministicText.total
+        )
+      )
+    );
 
   return {
     verified: true,
@@ -2962,6 +3009,13 @@ async function verifyGeneratedImageV2({
     requestFulfillment,
     artifactFree,
     textAccuracy,
+    deterministicTextAccuracy:
+      deterministicText.applicable ? deterministicText.score : null,
+    exactTextMatches:
+      deterministicText.applicable ? deterministicText.exactMatches : null,
+    exactTextTotal:
+      deterministicText.applicable ? deterministicText.total : null,
+    observedText,
     realism,
     retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
     issues: cleanStringArray(parsed?.issues, 14),
