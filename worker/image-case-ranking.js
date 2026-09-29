@@ -45,7 +45,7 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
-export function scoreImageCaseRelevance(item, {
+export function describeImageCaseRelevance(item, {
   mode = "",
   query = "",
   targets = [],
@@ -53,7 +53,15 @@ export function scoreImageCaseRelevance(item, {
 } = {}) {
   const requestedMode = String(mode || "");
   const sameMode = !requestedMode || String(item?.mode || "") === requestedMode;
-  if (!sameMode) return -1;
+  if (!sameMode) {
+    return {
+      relevance: -1,
+      semanticSimilarity: 0,
+      quality: 0,
+      recency: 0,
+      retryPenalty: 0,
+    };
+  }
 
   const queryTokens = tokenizeImageIntent(
     [query, ...(Array.isArray(targets) ? targets : [])].join(" ")
@@ -102,12 +110,21 @@ export function scoreImageCaseRelevance(item, {
     pass * 0.07 +
     verified * 0.03;
 
-  return (
-    semanticProxy * 0.52 +
-    quality * 0.36 +
-    recency * 0.12 -
-    retryPenalty
-  );
+  return {
+    relevance:
+      semanticProxy * 0.52 +
+      quality * 0.36 +
+      recency * 0.12 -
+      retryPenalty,
+    semanticSimilarity: semanticProxy,
+    quality,
+    recency,
+    retryPenalty,
+  };
+}
+
+export function scoreImageCaseRelevance(item, options = {}) {
+  return describeImageCaseRelevance(item, options).relevance;
 }
 
 export function rankImageCases(cases, options = {}) {
@@ -116,7 +133,7 @@ export function rankImageCases(cases, options = {}) {
   const scored = list
     .map((item) => ({
       item,
-      relevance: scoreImageCaseRelevance(item, options),
+      ...describeImageCaseRelevance(item, options),
     }))
     .filter((entry) => entry.relevance >= 0)
     .sort(
