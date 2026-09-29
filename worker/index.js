@@ -9,7 +9,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.7.0";
+const VERSION = "2.7.1";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -896,6 +896,9 @@ async function handleStatus(env) {
         visualLearning: true,
         imageCaseMemory: true,
         taskAwareImageRouting: true,
+        exactTextPlanning: true,
+        naturalAspectRatioRouting: true,
+        contextHygiene: true,
         multiReferenceContinuity: true,
         rootReferenceAnchor: true,
       },
@@ -1663,6 +1666,8 @@ async function expandCreativePrompt({
     "Transforme pedidos visuais curtos em prompts de alta fidelidade sem mudar a intenção, os personagens, os objetos, as cores nem o estilo pedido.",
     "Não force fotorealismo quando o usuário pedir ilustração, anime, desenho, pintura, 3D ou outro estilo.",
     "Preserve rigorosamente tudo que já existe quando houver imagem de referência e mude apenas o que o usuário pediu.",
+    "O histórico é contexto, não uma lista de atributos obrigatórios. Não herde detalhes visuais de imagens/pedidos antigos se o pedido atual não fizer referência explícita a eles.",
+    "Quando o pedido atual for uma criação nova, priorize-o sobre descrições visuais anteriores.",
     "Devolva somente o prompt final, sem explicações, listas ou comentários.",
     kind === "image"
       ? "Para imagem, detalhe composição, enquadramento, iluminação, ambiente, materiais, textura, profundidade e atmosfera apenas quando útil."
@@ -1804,6 +1809,24 @@ function imageTaskFallback(prompt, hasSourceImage) {
   const aspectRatioMatch =
     text.match(/\b(1:1|16:9|9:16|4:5|5:4|3:2|2:3)\b/);
 
+  const naturalAspectRatio =
+    /\b(story|stories|reels?|tiktok|vertical|9x16)\b/i.test(text)
+      ? "9:16"
+      : /\b(youtube|thumbnail|miniatura|banner|widescreen|paisagem|horizontal)\b/i.test(text)
+        ? "16:9"
+        : /\b(feed|instagram|post vertical|4x5)\b/i.test(text)
+          ? "4:5"
+          : /\b(avatar|perfil|quadrad[oa]|square)\b/i.test(text)
+            ? "1:1"
+            : null;
+
+  const requestedText = [
+    ...String(prompt || "").matchAll(/[“"']([^“”"'\n]{1,180})[”"']/g),
+  ]
+    .map((match) => String(match?.[1] || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
   return {
     mode,
     intentSummary: String(prompt || "").slice(0, 1200),
@@ -1815,13 +1838,19 @@ function imageTaskFallback(prompt, hasSourceImage) {
       hasSourceImage &&
       (mode === "identity_lock" || mode === "strict_edit" || mode === "enhance"),
     requiresTextAccuracy:
-      poster || /\b(texto|escreva|escrito|frase|título|titulo|logo)\b/i.test(text),
+      poster ||
+      requestedText.length > 0 ||
+      /\b(texto|escreva|escrito|frase|título|titulo|logo)\b/i.test(text),
+    requestedText,
     targets: [],
     successCriteria: [],
     riskFlags: hasSourceImage
       ? ["identity drift", "composition drift", "unrequested changes"]
       : [],
-    aspectRatio: aspectRatioMatch?.[1] || (poster ? "4:5" : "1:1"),
+    aspectRatio:
+      aspectRatioMatch?.[1] ||
+      naturalAspectRatio ||
+      (poster ? "4:5" : "1:1"),
   };
 }
 
@@ -1859,8 +1888,10 @@ async function classifyImageTask({
           "identity_lock significa que a identidade do sujeito é prioridade absoluta.",
           "poster significa composição gráfica/publicitária criada do zero.",
           "Retorne SOMENTE JSON válido:",
-          "{mode:string,intentSummary:string,preservationLevel:'low|medium|high|maximum',editStrength:number,localized:boolean,requiresIdentityLock:boolean,requiresTextAccuracy:boolean,targets:string[],successCriteria:string[],riskFlags:string[],aspectRatio:'1:1|16:9|9:16|4:5|5:4|3:2|2:3'}.",
+          "{mode:string,intentSummary:string,preservationLevel:'low|medium|high|maximum',editStrength:number,localized:boolean,requiresIdentityLock:boolean,requiresTextAccuracy:boolean,requestedText:string[],targets:string[],successCriteria:string[],riskFlags:string[],aspectRatio:'1:1|16:9|9:16|4:5|5:4|3:2|2:3'}.",
           "editStrength vai de 0 a 1: quanto menor, menos liberdade para alterar a referência.",
+          "requestedText deve conter somente textos que precisam aparecer exatamente na imagem, preservando ortografia, acentos, números e pontuação.",
+          "Para Story/Reels/TikTok prefira 9:16; thumbnail/YouTube 16:9; feed vertical 4:5; avatar/quadrado 1:1, salvo pedido explícito diferente.",
           "Não invente mudanças que o usuário não solicitou.",
         ].join(" "),
       },
@@ -1936,6 +1967,13 @@ async function classifyImageTask({
       typeof parsed.requiresTextAccuracy === "boolean"
         ? parsed.requiresTextAccuracy
         : fallback.requiresTextAccuracy,
+    requestedText: cleanStringArray(
+      parsed.requestedText?.length
+        ? parsed.requestedText
+        : fallback.requestedText,
+      8,
+      240
+    ),
     targets: cleanStringArray(parsed.targets, 10),
     successCriteria: cleanStringArray(parsed.successCriteria, 12),
     riskFlags: cleanStringArray(parsed.riskFlags, 12),
@@ -2082,7 +2120,12 @@ async function buildVisualEditSpec({
       localized: Boolean(taskPlan?.localized),
       successCriteria: taskPlan?.successCriteria || [],
       failureRisks: taskPlan?.riskFlags || [],
-      textRequirements: visualContext?.textElements || [],
+      textRequirements: [
+        ...(taskPlan?.requestedText || []),
+        ...(visualContext?.textElements || []),
+      ]
+        .filter((value, index, arr) => value && arr.indexOf(value) === index)
+        .slice(0, 12),
     };
   }
 
@@ -2103,6 +2146,7 @@ async function buildVisualEditSpec({
           "editStrength vai de 0 a 1 e deve respeitar o plano fornecido.",
           "Se preservationLevel for maximum, qualquer mudança não solicitada é falha.",
           "Preserve identidade visual, pose, enquadramento, fundo, iluminação e detalhes relevantes quando não forem alvos da edição.",
+          "Se IMAGE TASK PLAN tiver requestedText, copie esses valores exatamente para textRequirements; não reescreva, traduza, resuma ou corrija.",
           "Não invente pessoas, objetos, texto, cenário ou estilo.",
         ].join(" "),
       },
@@ -2196,7 +2240,12 @@ async function buildVisualEditSpec({
         : taskPlan?.riskFlags,
       14
     ),
-    textRequirements: cleanStringArray(parsed.textRequirements, 12),
+    textRequirements: [
+      ...cleanStringArray(taskPlan?.requestedText, 8, 240),
+      ...cleanStringArray(parsed.textRequirements, 12),
+    ]
+      .filter((value, index, arr) => arr.indexOf(value) === index)
+      .slice(0, 12),
   };
 }
 
@@ -2272,6 +2321,10 @@ function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContex
       : "IMAGE GENERATION MODE. Follow the requested subject, composition, style and details precisely without adding unrelated elements.",
     taskPlan?.requiresTextAccuracy
       ? "Any user-specified text must be copied exactly, character for character. Do not invent extra copy."
+      : "",
+    taskPlan?.requestedText?.length
+      ? "EXACT REQUIRED TEXT — COPY VERBATIM: " +
+        taskPlan.requestedText.map((value) => JSON.stringify(value)).join(" | ")
       : "",
     taskPlan?.successCriteria?.length
       ? "SUCCESS CRITERIA: " + taskPlan.successCriteria.join("; ")
@@ -2583,8 +2636,11 @@ async function verifyGeneratedImageV2({
     "Avalie se a imagem cumpre exatamente o pedido, não apenas se é bonita.",
     "Penalize anatomia incoerente, elementos duplicados, texto ilegível/incorreto, objetos não pedidos, composição ruim e estilo divergente.",
     taskPlan?.requiresTextAccuracy
-      ? "Há requisito de texto: copie exatamente o texto solicitado; erros ortográficos ou caracteres diferentes devem reduzir textAccuracy fortemente."
+      ? "Há requisito de texto: compare caractere por caractere; erros ortográficos, acentos, números ou pontuação diferentes devem reduzir textAccuracy fortemente."
       : "Se não houver texto relevante, textAccuracy deve ser 1.",
+    taskPlan?.requestedText?.length
+      ? "TEXTOS EXATOS ESPERADOS: " + JSON.stringify(taskPlan.requestedText)
+      : "",
   ].filter(Boolean).join(" ");
 
   let attempt = null;
