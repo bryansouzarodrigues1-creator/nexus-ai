@@ -26,3 +26,58 @@ export function shouldContinueImageContext(text, hasPreviousImage) {
 
   return value.length <= 120;
 }
+
+
+export function selectImageChainHistory(
+  messages,
+  imageChainId,
+  options = {}
+) {
+  const items = Array.isArray(messages) ? messages : [];
+  const chainId = String(imageChainId || "");
+  const max = Math.max(
+    1,
+    Math.min(24, Number(options.max || 12))
+  );
+
+  const usable = items.filter(
+    (item) =>
+      (item?.role === "user" || item?.role === "assistant") &&
+      typeof item?.content === "string" &&
+      item.content.trim()
+  );
+
+  if (chainId) {
+    const sameChain = usable.filter(
+      (item) => String(item?.imageChainId || "") === chainId
+    );
+    if (sameChain.length) {
+      return sameChain
+        .slice(-max)
+        .map((item) => ({
+          role: item.role,
+          content: item.content,
+        }));
+    }
+  }
+
+  if (options.legacyContinuation) {
+    return usable
+      .filter(
+        (item) =>
+          item?.mode === "image" ||
+          item?.media?.type === "image" ||
+          Boolean(item?.imageTask) ||
+          /^image|^visual|edit|poster|enhance|background|identity/i.test(
+            String(item?.generationMode || "")
+          )
+      )
+      .slice(-Math.min(max, 6))
+      .map((item) => ({
+        role: item.role,
+        content: item.content,
+      }));
+  }
+
+  return [];
+}
