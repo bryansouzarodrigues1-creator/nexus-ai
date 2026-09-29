@@ -155,6 +155,8 @@ A V2.6 também mantém uma **Image Case Memory** persistente. Ela não guarda os
 
 Antes de uma nova tarefa visual, casos anteriores do mesmo modo podem ser recuperados e usados pelo Visual Context Extractor/Edit Planner.
 
+O Adaptive Router também usa essa evidência por modo. Assim, desempenho de `strict_edit` não é tratado como se fosse automaticamente igual a `create`, `poster` ou `background`. Os casos por modo funcionam como evidência especializada, enquanto as métricas gerais continuam servindo como prior.
+
 A UI exibe quando disponível:
 - tipo de tarefa visual;
 - nível de preservação;
