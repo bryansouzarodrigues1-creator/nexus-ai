@@ -540,7 +540,7 @@ export class ConversationState extends DurableObject {
           Number(b?.at || 0) - Number(a?.at || 0)
         );
       })
-      .slice(0, 6)
+      .slice(0, 20)
       .map((item) => ({
         mode: item.mode,
         preservationLevel: item.preservationLevel,
