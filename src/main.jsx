@@ -558,8 +558,17 @@ function App(){
 
   async function storeGeneratedMedia(blob,type){
     const key=id();
-    try{await saveMedia(key,blob)}catch{}
-    return {type,key,url:URL.createObjectURL(blob)};
+    let persisted=false;
+    try{
+      await saveMedia(key,blob);
+      persisted=true;
+    }catch{}
+    return {
+      type,
+      key:persisted?key:null,
+      url:URL.createObjectURL(blob),
+      persisted
+    };
   }
 
 
@@ -707,7 +716,9 @@ function App(){
       imageChainId,
       generationMode:imageMode,
       imageJobId:imageJobId||null,
-      imageJobStatus:'complete',
+      imageJobStatus:imageJobId
+        ?(media.persisted?'complete':'pending-storage')
+        :'complete',
       imageJobResumed:res.headers.get('x-nexus-image-resumed')==='1'
     };
 
@@ -717,7 +728,7 @@ function App(){
       addMessage(tid,patch);
     }
 
-    if(imageJobId){
+    if(imageJobId&&media.persisted){
       ackImageJob(imageJobId,tid);
     }
 
