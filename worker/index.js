@@ -3768,6 +3768,7 @@ async function handleImage(request, env) {
           artifactFree: best.verification?.artifactFree,
           textAccuracy: best.verification?.textAccuracy,
           retries: best.retryCount,
+          rootReferenceUsed: hasRootReference,
           successCriteria: taskPlan.successCriteria,
           issues: best.verification?.issues || [],
           unwantedChanges:
@@ -4060,6 +4061,7 @@ async function handleImage(request, env) {
       artifactFree: fallbackVerification.artifactFree,
       textAccuracy: fallbackVerification.textAccuracy,
       retries: 0,
+      rootReferenceUsed: hasRootReference,
       successCriteria: taskPlan.successCriteria,
       issues: fallbackVerification.issues || [],
       unwantedChanges:
