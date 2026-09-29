@@ -101,3 +101,12 @@ video.generated{width:min(720px,100%)}
   .attachment-chip span{max-width:170px}
   .attachment-stack{max-height:190px;overflow:auto}
 }
+
+
+.image-job-state{margin-top:10px;padding:9px 10px;border:1px solid #2b313d;background:#10141a;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;color:#8f98a8;font-size:11px}
+.image-job-state>div{display:flex;align-items:center;gap:7px}
+.image-job-state button{border:1px solid #323946;background:#171b22;color:#b6bdc9;border-radius:8px;padding:6px 9px;font-size:10px;cursor:pointer}
+.image-job-state button:hover{background:#1d222b;border-color:#424b5c}
+.image-job-state.pending{border-color:#3a3447}
+.image-job-state.running,.image-job-state.starting{border-color:#2d3c4d}
+.image-job-state.errored{border-color:#573336;background:#211416;color:#db9696}
