@@ -5636,8 +5636,18 @@ async function handleImageStart(request, env) {
     );
   }
 
-  const taskId = crypto.randomUUID();
-  const payloadText = JSON.stringify(body);
+  const requestedTaskId = String(body?.taskId || "")
+    .trim()
+    .slice(0, 100);
+  const taskId =
+    /^[a-zA-Z0-9_][a-zA-Z0-9-_]{7,99}$/.test(requestedTaskId)
+      ? requestedTaskId
+      : crypto.randomUUID();
+
+  const payloadText = JSON.stringify({
+    ...body,
+    taskId,
+  });
 
   try {
     await stub.putTaskPayload(taskId, payloadText);
