@@ -227,6 +227,58 @@ async function addGlobalLearningLesson(env, lesson = {}) {
   } catch {}
 }
 
+
+async function getImageCaseContext(env, mode = "") {
+  const stub = learningStub(env);
+  if (!stub) return { mode, cases: [] };
+  try {
+    return await stub.getImageCaseContext(mode);
+  } catch {
+    return { mode, cases: [] };
+  }
+}
+
+function formatImageCaseContext(context) {
+  const cases = Array.isArray(context?.cases) ? context.cases : [];
+  if (!cases.length) return "";
+
+  return (
+    "CASOS VISUAIS ANTERIORES DO MESMO TIPO:\n" +
+    cases
+      .map((item, index) => {
+        const metrics = [
+          item?.score == null ? "" : "score=" + Math.round(Number(item.score) * 100) + "%",
+          item?.identity == null ? "" : "identidade=" + Math.round(Number(item.identity) * 100) + "%",
+          item?.requestFulfillment == null ? "" : "pedido=" + Math.round(Number(item.requestFulfillment) * 100) + "%",
+          item?.artifactFree == null ? "" : "artefatos=" + Math.round(Number(item.artifactFree) * 100) + "%",
+          "retries=" + Number(item?.retries || 0),
+          item?.pass ? "passou" : "falhou",
+        ].filter(Boolean).join(" · ");
+
+        return [
+          (index + 1) + ". modo=" + String(item?.mode || ""),
+          item?.intentSummary ? "intenção=" + String(item.intentSummary).slice(0, 500) : "",
+          metrics,
+          Array.isArray(item?.issues) && item.issues.length
+            ? "problemas=" + item.issues.join("; ")
+            : "",
+          Array.isArray(item?.unwantedChanges) && item.unwantedChanges.length
+            ? "mudanças indesejadas=" + item.unwantedChanges.join("; ")
+            : "",
+        ].filter(Boolean).join(" | ");
+      })
+      .join("\n")
+  ).slice(0, 6500);
+}
+
+async function recordGlobalImageCase(env, caseData = {}) {
+  const stub = learningStub(env);
+  if (!stub) return;
+  try {
+    await stub.recordImageCase(caseData);
+  } catch {}
+}
+
 async function extractFeedbackLesson(env, feedback = {}) {
   if (!env.AI || !String(feedback.note || "").trim()) return null;
 
@@ -481,10 +533,16 @@ async function handleLearningStatus(env) {
         modelStats: stats.length,
         lessons: lessons.length,
         providersTracked: providerHealth.length,
+        imageCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.length
+          : 0,
       },
       modelStats: stats,
       lessons,
       providerHealth,
+      imageCases: Array.isArray(snapshot?.imageCases)
+        ? snapshot.imageCases.slice(-20).reverse()
+        : [],
     });
   } catch (error) {
     return json(
@@ -656,6 +714,7 @@ async function handleStatus(env) {
         correctiveRetries: 2,
         aspectRatioPreservation: true,
         visualLearning: true,
+        imageCaseMemory: true,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
@@ -1667,6 +1726,7 @@ async function buildVisualContextV2({
   sourceDescription,
   prompt,
   taskPlan,
+  caseContext = "",
   sessionId,
   env,
 }) {
@@ -1709,6 +1769,7 @@ async function buildVisualContextV2({
         "Não identifique pessoas reais; descreva apenas traços visuais necessários para preservar a aparência.",
         "PEDIDO DO USUÁRIO: " + String(prompt || ""),
         "PLANO: " + JSON.stringify(taskPlan || {}),
+        caseContext ? "EXPERIÊNCIA DE CASOS ANTERIORES:\n" + caseContext : "",
         sourceDescription
           ? "DESCRIÇÃO EXTRAÍDA: " + String(sourceDescription).slice(0, 10000)
           : "",
@@ -1773,6 +1834,7 @@ async function buildVisualEditSpec({
   previousPrompt,
   taskPlan,
   visualContext,
+  caseContext = "",
   sessionId,
   env,
 }) {
@@ -1833,6 +1895,9 @@ async function buildVisualEditSpec({
           learnedContext
             ? "LIÇÕES APRENDIDAS:\n" + learnedContext
             : "",
+          caseContext
+            ? "CASOS ANTERIORES RELEVANTES:\n" + caseContext
+            : "",
         ].filter(Boolean).join("\n\n"),
       },
     ],
@@ -1854,6 +1919,7 @@ async function buildVisualEditSpec({
       previousPrompt,
       taskPlan,
       visualContext,
+      caseContext,
       sessionId,
       env: {},
     });
@@ -2813,6 +2879,17 @@ async function handleImage(request, env) {
     env,
   });
 
+  const imageCaseContext = await getImageCaseContext(
+    env,
+    taskPlan.mode
+  );
+  const imageCaseContextText =
+    formatImageCaseContext(imageCaseContext);
+  const imageExperienceContext = [
+    learnedContextText,
+    imageCaseContextText,
+  ].filter(Boolean).join("\n\n");
+
   const imageRoute = resolveAdaptiveImageRoute({
     requestedQuality,
     hasSourceImage: Boolean(sourceImage),
@@ -2838,6 +2915,7 @@ async function handleImage(request, env) {
       sourceDescription,
       prompt,
       taskPlan,
+      caseContext: imageCaseContextText,
       sessionId,
       env,
     });
@@ -2848,6 +2926,7 @@ async function handleImage(request, env) {
       previousPrompt,
       taskPlan,
       visualContext,
+      caseContext: imageCaseContextText,
       sessionId,
       env,
     });
@@ -2874,7 +2953,7 @@ async function handleImage(request, env) {
         prompt,
         expansion.prompt,
         taskPlan,
-        learnedContextText
+        imageExperienceContext
       );
 
   let cloudflareImageError = null;
@@ -3195,6 +3274,29 @@ async function handleImage(request, env) {
           }
         }
 
+        await recordGlobalImageCase(env, {
+          mode: finalMode,
+          preservationLevel: taskPlan.preservationLevel,
+          intentSummary: taskPlan.intentSummary || prompt,
+          provider: "cloudflare",
+          model: best.generated.model,
+          verified: Boolean(best.verification?.verified),
+          pass: best.verification?.verified
+            ? Boolean(best.verification?.pass)
+            : true,
+          score: best.verification?.score,
+          identity: best.verification?.identity,
+          requestFulfillment:
+            best.verification?.requestFulfillment,
+          artifactFree: best.verification?.artifactFree,
+          textAccuracy: best.verification?.textAccuracy,
+          retries: best.retryCount,
+          successCriteria: taskPlan.successCriteria,
+          issues: best.verification?.issues || [],
+          unwantedChanges:
+            best.verification?.unwantedChanges || [],
+        });
+
         return new Response(
           best.generated.bytes,
           {
@@ -3451,6 +3553,29 @@ async function handleImage(request, env) {
           Date.now() - startedAt,
       }
     );
+
+    await recordGlobalImageCase(env, {
+      mode,
+      preservationLevel: taskPlan.preservationLevel,
+      intentSummary: taskPlan.intentSummary || prompt,
+      provider: "huggingface",
+      model,
+      verified: Boolean(fallbackVerification.verified),
+      pass: fallbackVerification.verified
+        ? Boolean(fallbackVerification.pass)
+        : true,
+      score: fallbackVerification.score,
+      identity: fallbackVerification.identity,
+      requestFulfillment:
+        fallbackVerification.requestFulfillment,
+      artifactFree: fallbackVerification.artifactFree,
+      textAccuracy: fallbackVerification.textAccuracy,
+      retries: 0,
+      successCriteria: taskPlan.successCriteria,
+      issues: fallbackVerification.issues || [],
+      unwantedChanges:
+        fallbackVerification.unwantedChanges || [],
+    });
 
     return new Response(image, {
       headers: {
