@@ -1,11 +1,63 @@
 export function extractExactRequestedText(prompt, limit = 8) {
-  return [
-    ...String(prompt || "").matchAll(/[“"']([^“”"'\n]{1,180})[”"']/g),
-  ]
-    .map((match) => String(match?.[1] || "").trim())
-    .filter(Boolean)
-    .filter((value, index, arr) => arr.indexOf(value) === index)
-    .slice(0, Math.max(1, Math.min(20, Number(limit || 8))));
+  const source = String(prompt || "");
+  const max = Math.max(
+    1,
+    Math.min(20, Number(limit || 8))
+  );
+  const values = [];
+
+  const clean = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/^[“"'‘’]+|[”"'‘’]+$/g, "")
+      .trim()
+      .slice(0, 180);
+
+  const push = (value) => {
+    const cleaned = clean(value);
+    if (!cleaned) return;
+    if (!values.includes(cleaned)) {
+      values.push(cleaned);
+    }
+  };
+
+  for (const match of source.matchAll(
+    /[“"']([^“”"'\n]{1,180})[”"']/g
+  )) {
+    push(match?.[1]);
+  }
+
+  const labeledPatterns = [
+    /\b(?:texto|t[ií]tulo|frase|headline|copy)\s*[:=-]\s*([^\n,;]{1,180})/giu,
+    /\b(?:escreva|coloque|adicione|inclua|use)\s+(?:o\s+)?(?:texto|t[ií]tulo|frase)\s*[:=-]?\s*([^\n,;]{1,180})/giu,
+  ];
+
+  for (const pattern of labeledPatterns) {
+    for (const match of source.matchAll(pattern)) {
+      push(match?.[1]);
+    }
+  }
+
+  // Conservador: só captura comando direto sem "texto/título" quando a
+  // expressão está claramente em caixa alta/números. Isso evita transformar
+  // o restante de um prompt normal em copy obrigatória.
+  for (const match of source.matchAll(
+    /\b(?:escreva|coloque)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s$€£%.,:+\-]{2,100})(?=$|[;!?])/g
+  )) {
+    const candidate = clean(match?.[1]);
+    const letters = candidate.replace(
+      /[^A-Za-zÀ-ÿ]/g,
+      ""
+    );
+    if (
+      !letters ||
+      letters === letters.toUpperCase()
+    ) {
+      push(candidate);
+    }
+  }
+
+  return values.slice(0, max);
 }
 
 export function inferNaturalAspectRatio(prompt, fallback = null) {
