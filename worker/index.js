@@ -228,13 +228,22 @@ async function addGlobalLearningLesson(env, lesson = {}) {
 }
 
 
-async function getImageCaseContext(env, mode = "") {
+async function getImageCaseContext(
+  env,
+  mode = "",
+  query = "",
+  targets = []
+) {
   const stub = learningStub(env);
-  if (!stub) return { mode, cases: [] };
+  if (!stub) return { mode, query, cases: [] };
   try {
-    return await stub.getImageCaseContext(mode);
+    return await stub.getImageCaseContext(
+      mode,
+      String(query || "").slice(0, 2200),
+      Array.isArray(targets) ? targets.slice(0, 12) : []
+    );
   } catch {
-    return { mode, cases: [] };
+    return { mode, query, cases: [] };
   }
 }
 
@@ -259,6 +268,12 @@ function formatImageCaseContext(context) {
         return [
           (index + 1) + ". modo=" + String(item?.mode || ""),
           item?.intentSummary ? "intenção=" + String(item.intentSummary).slice(0, 500) : "",
+          Array.isArray(item?.targets) && item.targets.length
+            ? "alvos=" + item.targets.join("; ")
+            : "",
+          Number.isFinite(Number(item?.relevance))
+            ? "relevância=" + Math.round(Number(item.relevance) * 100) + "%"
+            : "",
           metrics,
           Array.isArray(item?.issues) && item.issues.length
             ? "problemas=" + item.issues.join("; ")
@@ -3214,7 +3229,9 @@ async function handleImage(request, env) {
 
   const imageCaseContext = await getImageCaseContext(
     env,
-    taskPlan.mode
+    taskPlan.mode,
+    taskPlan.intentSummary || prompt,
+    taskPlan.targets || []
   );
   const imageCaseContextText =
     formatImageCaseContext(imageCaseContext);
