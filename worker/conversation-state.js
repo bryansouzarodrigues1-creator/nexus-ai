@@ -509,6 +509,13 @@ export class ConversationState extends DurableObject {
       requestFulfillment: clampScore(caseData.requestFulfillment),
       artifactFree: clampScore(caseData.artifactFree),
       textAccuracy: clampScore(caseData.textAccuracy),
+      qualityGateScore: clampScore(caseData.qualityGateScore),
+      qualityGatePass:
+        typeof caseData.qualityGatePass === "boolean"
+          ? caseData.qualityGatePass
+          : null,
+      qualityGateBlockers:
+        cleanStringArrayForCase(caseData.qualityGateBlockers, 10),
       deterministicTextAccuracy:
         clampScore(caseData.deterministicTextAccuracy),
       referenceVerified: Boolean(caseData.referenceVerified),
@@ -621,6 +628,15 @@ export class ConversationState extends DurableObject {
         requestFulfillment: item.requestFulfillment,
         artifactFree: item.artifactFree,
         textAccuracy: item.textAccuracy,
+        qualityGateScore: item.qualityGateScore,
+        qualityGatePass:
+          typeof item.qualityGatePass === "boolean"
+            ? item.qualityGatePass
+            : null,
+        qualityGateBlockers:
+          Array.isArray(item.qualityGateBlockers)
+            ? item.qualityGateBlockers
+            : [],
         deterministicTextAccuracy:
           item.deterministicTextAccuracy,
         exactTextMatches:
