@@ -1,4 +1,5 @@
 import { InferenceClient } from "@huggingface/inference";
+import { WorkflowEntrypoint } from "cloudflare:workers";
 import {
   classifyAdaptiveFailure,
   compactAdaptiveDecision,
@@ -27,7 +28,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.8.2";
+const VERSION = "2.9.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -1016,6 +1017,8 @@ async function handleStatus(env) {
         candidateArena: true,
         crossQualityCandidateSelection: true,
         latencyOptimizedFastPath: true,
+        resilientBackgroundJobs: Boolean(env.NEXUS_IMAGE),
+        resumableImageResults: Boolean(env.NEXUS_IMAGE),
         maxImageReferences: 4,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
@@ -1039,6 +1042,7 @@ async function handleStatus(env) {
       files: true,
       image: Boolean(env.AI || env.HF_TOKEN),
       imageEdit: Boolean(env.AI || env.HF_TOKEN),
+      imageWorkflow: Boolean(env.NEXUS_IMAGE),
       video: Boolean(
         videoEnabled &&
         (
@@ -5582,6 +5586,364 @@ async function handleImage(request, env) {
 }
 
 
+function imageJobStub(env, sessionId) {
+  return conversationStub(env, sessionId);
+}
+
+function collectImageResponseMeta(response) {
+  const headers = {};
+  for (const [key, value] of response.headers.entries()) {
+    const lower = key.toLowerCase();
+    if (
+      lower === "content-type" ||
+      lower.startsWith("x-nexus-")
+    ) {
+      headers[key] = value;
+    }
+  }
+
+  return {
+    contentType:
+      response.headers.get("content-type") ||
+      "image/jpeg",
+    headers,
+  };
+}
+
+async function handleImageStart(request, env) {
+  if (!env.NEXUS_IMAGE) {
+    return json(
+      {
+        error: "Workflow de imagem não configurado.",
+        error_kind: "image-workflow-unavailable",
+      },
+      503
+    );
+  }
+
+  const body = await request.json();
+  const prompt = String(body?.prompt || "").trim();
+  const sessionId = String(body?.sessionId || "").trim().slice(0, 128);
+
+  if (!prompt) return json({ error: "Prompt vazio." }, 400);
+  if (!sessionId) return json({ error: "sessionId obrigatório." }, 400);
+
+  const stub = imageJobStub(env, sessionId);
+  if (!stub) {
+    return json(
+      { error: "Estado durável indisponível para o job de imagem." },
+      503
+    );
+  }
+
+  const taskId = crypto.randomUUID();
+  const payloadText = JSON.stringify(body);
+
+  try {
+    await stub.putTaskPayload(taskId, payloadText);
+    await stub.setTask(taskId, {
+      type: "image",
+      status: "queued",
+      prompt: prompt.slice(0, 1200),
+      createdAt: Date.now(),
+    });
+
+    const instance = await env.NEXUS_IMAGE.create({
+      id: taskId,
+      params: {
+        taskId,
+        sessionId,
+      },
+      retention: {
+        successRetention: "1 day",
+        errorRetention: "3 days",
+      },
+    });
+
+    return json(
+      {
+        id: instance.id,
+        taskId,
+        status: "queued",
+        route: "image-workflow",
+        resumable: true,
+      },
+      202
+    );
+  } catch (error) {
+    try {
+      await stub.setTask(taskId, {
+        status: "errored",
+        error: String(error?.message || error).slice(0, 1500),
+      });
+      await stub.deleteTaskPayload(taskId);
+    } catch {}
+
+    return json(
+      {
+        error: "Não consegui iniciar a geração durável de imagem.",
+        provider_error: error?.message || String(error),
+      },
+      502
+    );
+  }
+}
+
+async function handleImageJobStatus(taskId, sessionId, env) {
+  if (!env.NEXUS_IMAGE) {
+    return json({ error: "Workflow de imagem não configurado." }, 503);
+  }
+
+  const id = String(taskId || "").trim().slice(0, 100);
+  const sid = String(sessionId || "").trim().slice(0, 128);
+  if (!id || !sid) {
+    return json({ error: "taskId e sessionId são obrigatórios." }, 400);
+  }
+
+  try {
+    const instance = await env.NEXUS_IMAGE.get(id);
+    const details = await instance.status();
+    const stub = imageJobStub(env, sid);
+    const task = stub ? await stub.getTask(id) : null;
+    const artifactMeta = stub
+      ? await stub.getTaskArtifactMeta(id)
+      : null;
+
+    return json({
+      id,
+      status: details.status,
+      ready: Boolean(artifactMeta),
+      task: task
+        ? {
+            status: task.status || details.status,
+            prompt: task.prompt || "",
+            createdAt: Number(task.createdAt || 0),
+            startedAt: Number(task.startedAt || 0),
+            completedAt: Number(task.completedAt || 0),
+            error: task.error || "",
+          }
+        : null,
+      output: details.output || null,
+      error: details.error || null,
+    });
+  } catch (error) {
+    return json(
+      {
+        error: "Job de imagem não encontrado ou indisponível.",
+        provider_error: error?.message || String(error),
+      },
+      404
+    );
+  }
+}
+
+async function handleImageJobResult(taskId, sessionId, env) {
+  const id = String(taskId || "").trim().slice(0, 100);
+  const sid = String(sessionId || "").trim().slice(0, 128);
+  if (!id || !sid) {
+    return json({ error: "taskId e sessionId são obrigatórios." }, 400);
+  }
+
+  const stub = imageJobStub(env, sid);
+  if (!stub) {
+    return json({ error: "Estado durável indisponível." }, 503);
+  }
+
+  const artifact = await stub.getTaskArtifact(id);
+  if (!artifact?.bytes?.byteLength) {
+    const task = await stub.getTask(id);
+    return json(
+      {
+        error:
+          task?.status === "errored"
+            ? task.error || "A geração de imagem falhou."
+            : "A imagem ainda não está pronta.",
+        status: task?.status || "running",
+        error_kind: "image-job-not-ready",
+      },
+      task?.status === "errored" ? 502 : 425
+    );
+  }
+
+  const headers = new Headers(
+    artifact.meta?.headers &&
+    typeof artifact.meta.headers === "object"
+      ? artifact.meta.headers
+      : {}
+  );
+  headers.set(
+    "Content-Type",
+    artifact.meta?.contentType || "image/jpeg"
+  );
+  headers.set("Cache-Control", "no-store");
+  headers.set("X-Nexus-Image-Job", id);
+  headers.set("X-Nexus-Image-Resumed", "1");
+
+  return new Response(artifact.bytes, { headers });
+}
+
+async function handleImageJobAck(taskId, sessionId, env) {
+  const id = String(taskId || "").trim().slice(0, 100);
+  const sid = String(sessionId || "").trim().slice(0, 128);
+  if (!id || !sid) {
+    return json({ error: "taskId e sessionId são obrigatórios." }, 400);
+  }
+
+  const stub = imageJobStub(env, sid);
+  if (!stub) return json({ ok: true, skipped: true });
+
+  await Promise.all([
+    stub.deleteTaskArtifact(id),
+    stub.deleteTaskPayload(id),
+    stub.setTask(id, {
+      status: "consumed",
+      consumedAt: Date.now(),
+    }),
+  ]);
+
+  return json({ ok: true, id });
+}
+
+export class NexusImageWorkflow extends WorkflowEntrypoint {
+  async run(event, step) {
+    const taskId = String(event?.payload?.taskId || "").slice(0, 100);
+    const sessionId = String(event?.payload?.sessionId || "").slice(0, 128);
+
+    if (!taskId || !sessionId) {
+      throw new Error("Image workflow recebeu parâmetros inválidos.");
+    }
+
+    const stub = this.env.CONVERSATIONS.getByName(sessionId);
+
+    await step.do("mark-image-running", async () => {
+      await stub.setTask(taskId, {
+        type: "image",
+        status: "running",
+        startedAt: Date.now(),
+      });
+      return { ok: true };
+    });
+
+    try {
+      const result = await step.do(
+        "generate-and-store-image",
+        {
+          retries: {
+            limit: 1,
+            delay: "3 seconds",
+            backoff: "exponential",
+          },
+          timeout: "10 minutes",
+        },
+        async () => {
+          const existing = await stub.getTaskArtifactMeta(taskId);
+          if (existing) {
+            return {
+              stored: true,
+              reused: true,
+              size: Number(existing.size || 0),
+              contentType: existing.contentType || "image/jpeg",
+              headers: existing.headers || {},
+            };
+          }
+
+          const payloadText = await stub.getTaskPayload(taskId);
+          if (!payloadText) {
+            throw new Error("Payload do job de imagem não foi encontrado.");
+          }
+
+          const syntheticRequest = new Request(
+            "https://nexus.internal/api/image",
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+              },
+              body: payloadText,
+            }
+          );
+
+          const response = await handleImage(
+            syntheticRequest,
+            this.env
+          );
+
+          if (!response.ok) {
+            const raw = await response.text();
+            let message = raw;
+            try {
+              const parsed = JSON.parse(raw);
+              message =
+                parsed?.provider_error ||
+                parsed?.error ||
+                raw;
+            } catch {}
+            throw new Error(
+              String(message || "Falha na geração de imagem").slice(0, 1800)
+            );
+          }
+
+          const bytes = new Uint8Array(
+            await response.arrayBuffer()
+          );
+          if (!bytes.byteLength) {
+            throw new Error("O motor retornou uma imagem vazia.");
+          }
+
+          const meta = collectImageResponseMeta(response);
+          const stored = await stub.putTaskArtifact(
+            taskId,
+            meta,
+            bytes
+          );
+
+          return {
+            stored: true,
+            reused: false,
+            size: bytes.byteLength,
+            contentType: meta.contentType,
+            headers: meta.headers,
+            updatedAt: Number(stored?.updatedAt || Date.now()),
+          };
+        }
+      );
+
+      await step.do("finalize-image-job", async () => {
+        await stub.setTask(taskId, {
+          status: "complete",
+          completedAt: Date.now(),
+          resultSize: Number(result?.size || 0),
+        });
+        await stub.deleteTaskPayload(taskId);
+        return { ok: true };
+      });
+
+      return {
+        taskId,
+        sessionId,
+        ready: true,
+        size: Number(result?.size || 0),
+        contentType: result?.contentType || "image/jpeg",
+      };
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 1800);
+
+      await step.do("mark-image-error", async () => {
+        await stub.setTask(taskId, {
+          status: "errored",
+          error: message,
+          completedAt: Date.now(),
+        });
+        await stub.deleteTaskPayload(taskId);
+        return { ok: true };
+      });
+
+      throw error;
+    }
+  }
+}
+
+
 function clampVideoNumber(value, min, max, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -6634,6 +6996,25 @@ export default {
 
       if (url.pathname.startsWith("/api/agent/") && request.method === "GET")
         return handleAgentStatus(url.pathname.split("/").pop(), env);
+
+      if (url.pathname === "/api/image/start" && request.method === "POST")
+        return handleImageStart(request, env);
+
+      if (url.pathname.startsWith("/api/image/jobs/")) {
+        const parts = url.pathname.split("/").filter(Boolean);
+        const taskId = parts[3] || "";
+        const action = parts[4] || "";
+        const sessionId = url.searchParams.get("sessionId") || "";
+
+        if (!action && request.method === "GET")
+          return handleImageJobStatus(taskId, sessionId, env);
+
+        if (action === "result" && request.method === "GET")
+          return handleImageJobResult(taskId, sessionId, env);
+
+        if (action === "ack" && request.method === "POST")
+          return handleImageJobAck(taskId, sessionId, env);
+      }
 
       if (url.pathname === "/api/image" && request.method === "POST")
         return handleImage(request, env);
