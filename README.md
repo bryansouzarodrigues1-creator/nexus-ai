@@ -1,8 +1,57 @@
-# NEXUS AI v2.8.1
+# NEXUS AI v2.9
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## Resilient Image Jobs — v2.9
+
+A v2.9 remove a dependência entre uma geração de imagem longa e a conexão HTTP aberta no celular.
+
+Antes:
+
+```text
+celular mantém fetch aberto
+        ↓
+pipeline de imagem
+        ↓
+resultado
+```
+
+Se o Android suspendesse a aba, o navegador podia perder a conexão e mostrar `Failed to fetch`, mesmo quando o trabalho já estava em andamento.
+
+Agora:
+
+```text
+POST /api/image/start
+        ↓
+NexusImageWorkflow
+        ↓
+pipeline visual completo
+        ↓
+resultado temporário no ConversationState
+        ↓
+GET /api/image/jobs/:id/result
+        ↓
+IndexedDB no navegador
+        ↓
+ACK e limpeza da cópia temporária
+```
+
+Características:
+- o cliente cria o ID do job antes do envio;
+- o Workflow continua independente da aba/navegador;
+- trocar de conversa, minimizar ou reabrir o app não perde o ID do job;
+- jobs pendentes ficam persistidos junto à conversa local;
+- ao voltar à tela ou recuperar conexão, o frontend retoma o polling;
+- polling e download de resultado não consomem o rate limiter de IA;
+- a cópia server-side só é removida depois que o IndexedDB confirma a persistência;
+- jobs antigos são podados junto com o histórico de tarefas;
+- `/api/image` síncrono continua disponível como fallback de compatibilidade.
+
+A geração simples continua usando o fast path da v2.8.2. Tarefas com referência, texto exato, multi-reference ou qualidade máxima podem continuar demorando mais porque passam por verificações de fidelidade, mas não exigem mais que o usuário mantenha a tela aberta.
+
+O status expõe `providers.imageWorkflow` e a interface mostra um cartão persistente de job com ação **Verificar agora**.
 
 ## Image Quality Gate V2 — v2.8.1
 
@@ -149,7 +198,8 @@ React / Vite
 Cloudflare Worker
     ├── chat rápido / visão / documentos / imagem
     ├── ConversationState (Durable Object)
-    └── NexusAgentWorkflow (Cloudflare Workflow)
+    ├── NexusAgentWorkflow (Cloudflare Workflow)
+    └── NexusImageWorkflow (Cloudflare Workflow)
              ↓
        planner
          ↓
