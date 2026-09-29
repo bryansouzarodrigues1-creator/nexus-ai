@@ -201,6 +201,7 @@ async function waitForAgent(taskId){
 async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
   const started=Date.now();
   let delay=900;
+  let notFoundCount=0;
 
   while(Date.now()-started<timeoutMs){
     const res=await fetch(
@@ -212,6 +213,12 @@ async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
     const data=await res.json().catch(()=>({}));
 
     if(!res.ok){
+      if(res.status===404&&notFoundCount<4){
+        notFoundCount+=1;
+        await sleep(1200);
+        continue;
+      }
+
       const error=new Error(
         data.error||
         data.provider_error||
@@ -220,6 +227,8 @@ async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
       error.imageJobStatus=res.status===404?'unknown':'network';
       throw error;
     }
+
+    notFoundCount=0;
 
     if(data.ready||data.status==='complete'){
       return data;
@@ -1190,7 +1199,7 @@ function App(){
         };
 
         let directRes=null;
-        const useImageWorkflow=Boolean(status?.providers?.imageWorkflow);
+        const useImageWorkflow=status?.providers?.imageWorkflow!==false;
 
         if(useImageWorkflow){
           const imageJobId=id();
