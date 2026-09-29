@@ -3704,6 +3704,9 @@ async function handleImage(request, env) {
             modelOverride: adaptiveModelForAttempt,
             prompt: retryPrompt,
             sourceImage,
+            rootReferenceImage:
+              hasRootReference ? rootReferenceImage : null,
+            extraReferenceImages,
             width: outputSize.width,
             height: outputSize.height,
             editStrength: Math.max(
@@ -4231,7 +4234,7 @@ async function handleImage(request, env) {
       artifactFree: fallbackVerification.artifactFree,
       textAccuracy: fallbackVerification.textAccuracy,
       retries: 0,
-      rootReferenceUsed: hasRootReference,
+      rootReferenceUsed: false,
       targets: taskPlan.targets || [],
       riskFlags: taskPlan.riskFlags || [],
       successCriteria: taskPlan.successCriteria,
@@ -4251,8 +4254,7 @@ async function handleImage(request, env) {
           imageCase?.id || "",
         "X-Nexus-Preservation":
           taskPlan.preservationLevel,
-        "X-Nexus-Root-Reference":
-          hasRootReference ? "1" : "0",
+        "X-Nexus-Root-Reference": "0",
         "X-Nexus-Extra-References": "0",
         "X-Nexus-Provider":
           "huggingface",
