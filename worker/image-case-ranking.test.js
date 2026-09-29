@@ -135,3 +135,40 @@ import {
 }
 
 console.log("image-case-ranking tests passed");
+
+
+{
+  // explicit user feedback outranks verifier-only equivalence
+  const base = {
+    at: Date.now(),
+    mode: "strict_edit",
+    intentSummary: "trocar a cor da camisa sem mudar o rosto",
+    targets: ["camisa", "rosto"],
+    verified: true,
+    pass: true,
+    score: 0.9,
+    identity: 0.95,
+    requestFulfillment: 0.9,
+    artifactFree: 0.93,
+    retries: 0,
+  };
+
+  const ranked = rankImageCases(
+    [
+      { ...base, id: "negative", userSignal: "negative" },
+      { ...base, id: "positive", userSignal: "positive" },
+    ],
+    {
+      mode: "strict_edit",
+      query: "mude a camisa mas preserve o rosto",
+      targets: ["camisa", "rosto"],
+      limit: 2,
+    }
+  );
+
+  assert.equal(ranked[0].item.id, "positive");
+  assert(
+    ranked.find((entry) => entry.item.id === "negative")
+      .semanticSimilarity > 0
+  );
+}
