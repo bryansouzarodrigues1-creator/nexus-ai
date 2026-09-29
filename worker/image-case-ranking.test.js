@@ -134,6 +134,58 @@ import {
   );
 }
 
+
+
+{
+  const now = Date.now();
+  const shared = {
+    mode: "strict_edit",
+    intentSummary: "trocar somente a cor da camisa",
+    targets: ["camisa"],
+    verified: true,
+    pass: true,
+    score: 0.9,
+    identity: 0.92,
+    requestFulfillment: 0.9,
+    artifactFree: 0.92,
+    textAccuracy: 1,
+    at: now,
+  };
+
+  const goodGate = describeImageCaseRelevance(
+    {
+      ...shared,
+      qualityGateScore: 0.93,
+      qualityGatePass: true,
+      qualityGateBlockers: [],
+    },
+    {
+      mode: "strict_edit",
+      query: "trocar cor da camisa",
+      targets: ["camisa"],
+      now,
+    }
+  );
+
+  const blockedGate = describeImageCaseRelevance(
+    {
+      ...shared,
+      qualityGateScore: 0.61,
+      qualityGatePass: false,
+      qualityGateBlockers: ["identity", "composition"],
+    },
+    {
+      mode: "strict_edit",
+      query: "trocar cor da camisa",
+      targets: ["camisa"],
+      now,
+    }
+  );
+
+  assert.ok(goodGate.quality > blockedGate.quality);
+  assert.ok(goodGate.relevance > blockedGate.relevance);
+}
+
 console.log("image-case-ranking tests passed");
 
 
