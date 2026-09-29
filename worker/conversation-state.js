@@ -6,6 +6,7 @@ const MAX_METRICS = 200;
 const MAX_FEEDBACK = 240;
 const MAX_LESSONS = 160;
 const MAX_MODEL_STATS = 140;
+const MAX_IMAGE_CASES = 120;
 
 function cleanText(value, max = 12000) {
   return String(value ?? "").trim().slice(0, max);
@@ -155,6 +156,15 @@ function updateModelStats(stats, item = {}) {
   );
 }
 
+function cleanStringArrayForCase(value, max = 10) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => cleanText(item || "", 700))
+        .filter(Boolean)
+        .slice(0, max)
+    : [];
+}
+
 function cleanEvent(event = {}) {
   return {
     id: cleanText(event.id || crypto.randomUUID(), 120),
@@ -175,7 +185,7 @@ export class ConversationState extends DurableObject {
   }
 
   async getSnapshot() {
-    const [summary, events, tasks, metrics, profile, feedback, lessons, modelStats, providerHealth] = await Promise.all([
+    const [summary, events, tasks, metrics, profile, feedback, lessons, modelStats, providerHealth, imageCases] = await Promise.all([
       this.ctx.storage.get("summary"),
       this.ctx.storage.get("events"),
       this.ctx.storage.get("tasks"),
@@ -185,6 +195,7 @@ export class ConversationState extends DurableObject {
       this.ctx.storage.get("lessons"),
       this.ctx.storage.get("modelStats"),
       this.ctx.storage.get("providerHealth"),
+      this.ctx.storage.get("imageCases"),
     ]);
 
     return {
@@ -200,6 +211,7 @@ export class ConversationState extends DurableObject {
         providerHealth && typeof providerHealth === "object"
           ? providerHealth
           : {},
+      imageCases: Array.isArray(imageCases) ? imageCases : [],
     };
   }
 
@@ -464,6 +476,101 @@ export class ConversationState extends DurableObject {
     };
   }
 
+  async recordImageCase(caseData = {}) {
+    const allowedModes = new Set([
+      "create",
+      "strict_edit",
+      "enhance",
+      "remove_replace",
+      "poster",
+      "identity_lock",
+      "background",
+    ]);
+    const modeRaw = cleanText(caseData.mode || "create", 40);
+    const mode = allowedModes.has(modeRaw) ? modeRaw : "create";
+    const clampScore = (value) =>
+      Number.isFinite(Number(value))
+        ? Math.max(0, Math.min(1, Number(value)))
+        : null;
+
+    const item = {
+      id: cleanText(caseData.id || crypto.randomUUID(), 120),
+      at: Date.now(),
+      mode,
+      preservationLevel: cleanText(caseData.preservationLevel || "", 24),
+      intentSummary: cleanText(caseData.intentSummary || "", 900),
+      provider: cleanText(caseData.provider || "", 80),
+      model: cleanText(caseData.model || "", 180),
+      verified: Boolean(caseData.verified),
+      pass: caseData.pass !== false,
+      score: clampScore(caseData.score),
+      identity: clampScore(caseData.identity),
+      requestFulfillment: clampScore(caseData.requestFulfillment),
+      artifactFree: clampScore(caseData.artifactFree),
+      textAccuracy: clampScore(caseData.textAccuracy),
+      retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
+      successCriteria: cleanStringArrayForCase(caseData.successCriteria, 10),
+      issues: cleanStringArrayForCase(caseData.issues, 10),
+      unwantedChanges: cleanStringArrayForCase(caseData.unwantedChanges, 10),
+    };
+
+    const cases = (await this.ctx.storage.get("imageCases")) || [];
+    const next = [...(Array.isArray(cases) ? cases : []), item]
+      .slice(-MAX_IMAGE_CASES);
+    await this.ctx.storage.put("imageCases", next);
+    return item;
+  }
+
+  async getImageCaseContext(mode = "") {
+    const requestedMode = cleanText(mode || "", 40);
+    const cases = (await this.ctx.storage.get("imageCases")) || [];
+    const relevant = (Array.isArray(cases) ? cases : [])
+      .filter((item) => !requestedMode || item?.mode === requestedMode)
+      .sort((a, b) => {
+        const aVerified = a?.verified ? 1 : 0;
+        const bVerified = b?.verified ? 1 : 0;
+        const aPass = a?.pass ? 1 : 0;
+        const bPass = b?.pass ? 1 : 0;
+        const aScore = Number.isFinite(Number(a?.score)) ? Number(a.score) : 0.5;
+        const bScore = Number.isFinite(Number(b?.score)) ? Number(b.score) : 0.5;
+        return (
+          bVerified - aVerified ||
+          bPass - aPass ||
+          bScore - aScore ||
+          Number(b?.at || 0) - Number(a?.at || 0)
+        );
+      })
+      .slice(0, 6)
+      .map((item) => ({
+        mode: item.mode,
+        preservationLevel: item.preservationLevel,
+        intentSummary: item.intentSummary,
+        provider: item.provider,
+        model: item.model,
+        verified: Boolean(item.verified),
+        pass: Boolean(item.pass),
+        score: item.score,
+        identity: item.identity,
+        requestFulfillment: item.requestFulfillment,
+        artifactFree: item.artifactFree,
+        textAccuracy: item.textAccuracy,
+        retries: Number(item.retries || 0),
+        successCriteria: Array.isArray(item.successCriteria)
+          ? item.successCriteria
+          : [],
+        issues: Array.isArray(item.issues) ? item.issues : [],
+        unwantedChanges: Array.isArray(item.unwantedChanges)
+          ? item.unwantedChanges
+          : [],
+        at: Number(item.at || 0),
+      }));
+
+    return {
+      mode: requestedMode,
+      cases: relevant,
+    };
+  }
+
   async getProviderHealth() {
     const health = (await this.ctx.storage.get("providerHealth")) || {};
     const now = Date.now();
@@ -554,6 +661,7 @@ export class ConversationState extends DurableObject {
       this.ctx.storage.delete("lessons"),
       this.ctx.storage.delete("modelStats"),
       this.ctx.storage.delete("providerHealth"),
+      this.ctx.storage.delete("imageCases"),
     ]);
     return { ok: true };
   }
