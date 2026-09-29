@@ -5,6 +5,7 @@ import {
   evaluateImageQualityGate,
   applyImageQualityGate,
   planImageRetryStrategy,
+  selectBetterVisualCandidate,
 } from "./image-quality-gate.js";
 
 {
@@ -283,4 +284,102 @@ console.log("image-quality-gate tests passed");
   assert.equal(plan.retryClass, "balanced");
   assert.ok(plan.editStrength < 0.35);
   assert.match(plan.promptHint, /supplementary references/i);
+}
+
+
+{
+  // Candidate Arena: a passing candidate always beats a rejected one,
+  // even when the rejected candidate has a superficially higher score.
+  const rejected = {
+    best: {
+      candidateScore: 0.96,
+      retryCount: 0,
+      verification: {
+        verified: true,
+        pass: false,
+        score: 0.96,
+      },
+    },
+    imageQuality: "quality",
+  };
+
+  const passed = {
+    best: {
+      candidateScore: 0.82,
+      retryCount: 1,
+      verification: {
+        verified: true,
+        pass: true,
+        score: 0.82,
+      },
+    },
+    imageQuality: "fast",
+  };
+
+  assert.equal(
+    selectBetterVisualCandidate(rejected, passed),
+    passed
+  );
+}
+
+{
+  // Among rejected candidates, keep the one with the stronger global score.
+  const quality = {
+    best: {
+      candidateScore: 0.71,
+      retryCount: 2,
+      verification: {
+        verified: true,
+        pass: false,
+      },
+    },
+    imageQuality: "quality",
+  };
+
+  const fast = {
+    best: {
+      candidateScore: 0.66,
+      retryCount: 0,
+      verification: {
+        verified: true,
+        pass: false,
+      },
+    },
+    imageQuality: "fast",
+  };
+
+  assert.equal(
+    selectBetterVisualCandidate(quality, fast),
+    quality
+  );
+}
+
+{
+  // Tie-breaker: fewer correction passes wins when quality evidence is equal.
+  const a = {
+    best: {
+      candidateScore: 0.8,
+      retryCount: 3,
+      verification: {
+        verified: true,
+        pass: false,
+      },
+    },
+  };
+
+  const b = {
+    best: {
+      candidateScore: 0.8,
+      retryCount: 1,
+      verification: {
+        verified: true,
+        pass: false,
+      },
+    },
+  };
+
+  assert.equal(
+    selectBetterVisualCandidate(a, b),
+    b
+  );
 }
