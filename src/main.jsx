@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
+import {wantsFreshImage,shouldContinueImageContext} from './image-context.js';
 
 const starterActions=[
   {icon:Globe2,label:'Pesquisar na web',mode:'search'},
@@ -129,37 +130,6 @@ async function imageDataUrlDimensions(dataUrl){
     img.onerror=()=>resolve(null);
     img.src=dataUrl;
   });
-}
-
-function wantsFreshImage(text){
-  return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|sem relacao|reinicie|recomece|novo desenho|nova foto)\b/i.test(String(text||''));
-}
-
-function shouldContinueImageContext(text,hasPreviousImage){
-  if(!hasPreviousImage)return false;
-  const value=String(text||'').trim();
-  if(!value)return true;
-  if(wantsFreshImage(value))return false;
-
-  const explicitReference=
-    /\b(essa|esta|nessa|nesta|dessa|desta|mesma|anterior|acima|última|ultima)\s+(imagem|foto|arte|imagem gerada|foto gerada)\b/i.test(value) ||
-    /\b(nela|nessa imagem|na imagem|na foto|a partir dela|a partir dessa|use essa|use esta|mantenha essa)\b/i.test(value);
-
-  const editLanguage=
-    /\b(edite|editar|mude|mudar|troque|trocar|remova|remover|retire|tirar|apague|apagar|adicione|adicionar|coloque|colocar|deixe|deixar|melhore|melhorar|corrija|corrigir|transforme|transformar|preserve|manter|mantenha|aumente|reduza|fundo|rosto|cabelo|camisa|roupa|cor|objeto)\b/i.test(value);
-
-  const explicitNewCreation=
-    /\b(gere|gera|gerar|crie|cria|criar|faça|faca|desenhe|produza|generate|create|make|draw)\b[\s\S]{0,45}\b(uma|um)?\s*(nova\s+)?(imagem|foto|ilustração|ilustracao|desenho|arte)\b/i.test(value) ||
-    /\b(gere|gera|crie|cria|faça|faca|desenhe|produza)\b[\s\S]{0,35}\b(de|do|da)\b/i.test(value);
-
-  if(explicitReference||editLanguage)return true;
-  if(explicitNewCreation)return false;
-
-  // Follow-ups curtos como "mais realista", "um pouco mais claro" ou
-  // "agora cacheado" normalmente se referem ao resultado visual anterior.
-  if(value.length<=120)return true;
-
-  return false;
 }
 
 function wantsHighImageQuality(text){
@@ -677,9 +647,18 @@ function App(){
       if(requestMode==='image'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
         const continuePrevious=Boolean(
+          !activeAttachment?.kind &&
           previousImage &&
           shouldContinueImageContext(effectiveText,true)
         );
+        const imageChainId=activeAttachment?.kind==='image'
+          ?id()
+          :continuePrevious
+            ?(previousImage?.imageChainId||id())
+            :id();
+
+        updateMessage(tid,user.id,{imageChainId});
+
         const sourceImageRaw=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :continuePrevious?await mediaAsDataUrl(previousImage):null;
@@ -719,8 +698,19 @@ function App(){
           ?await shrinkImageDataUrl(sourceImageRaw,500)
           :null;
 
-        const previousPrompt=(currentThread?.messages||[])
-          .filter(m=>m.role==='user'&&m.mode==='image')
+        const priorImagePrompts=(currentThread?.messages||[])
+          .filter(m=>m.role==='user'&&m.mode==='image');
+
+        const sameChainPrompts=priorImagePrompts
+          .filter(m=>m.imageChainId&&m.imageChainId===imageChainId);
+
+        const previousPrompt=(
+          sameChainPrompts.length
+            ?sameChainPrompts
+            :continuePrevious&&!previousImage?.imageChainId
+              ?priorImagePrompts.slice(-3)
+              :[]
+        )
           .slice(-6)
           .map(m=>m.content)
           .join(' -> ');
@@ -823,6 +813,7 @@ function App(){
           visualRootKey:inheritedRootKey||media.key||null,
           rootReferenceUsed,
           adaptiveRouter,
+          imageChainId,
           generationMode:imageMode
         });
       }else if(requestMode==='video'){
