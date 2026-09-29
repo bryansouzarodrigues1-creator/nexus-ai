@@ -9,7 +9,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -647,7 +647,16 @@ async function handleStatus(env) {
       durableConversationState: Boolean(env.CONVERSATIONS),
       agentWorkflow: Boolean(env.NEXUS_AGENT),
       orchestration: "router+durable-state+planner-solver-critic-verifier",
-      visualEditing: "edit-spec+reference+verification+best-of-two-retry",
+      visualEditing: "image-task-router+visual-context-v2+edit-spec-v2+direct-visual-verifier+best-of-three-retry",
+      imageIntelligence: {
+        taskRouter: true,
+        visualContextV2: true,
+        editSpecV2: true,
+        directVisualVerifier: true,
+        correctiveRetries: 2,
+        aspectRatioPreservation: true,
+        visualLearning: true,
+      },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
       learningLoop: {
@@ -1459,14 +1468,337 @@ async function describeVisualImage(blob, env, label = "imagem") {
   }
 }
 
+
+function imageTaskFallback(prompt, hasSourceImage) {
+  const text = String(prompt || "").toLowerCase();
+  const poster =
+    /\b(poster|pôster|flyer|banner|anúncio|anuncio|publicidade|arte para|thumbnail|capa|cartaz|story|feed)\b/i.test(text);
+  const enhance =
+    hasSourceImage &&
+    /\b(melhor(e|ar|e a)|aument(e|ar).*qualidade|qualidade|nitidez|resolução|resolucao|upscale|restaur|sem mudar|não mude|nao mude)\b/i.test(text);
+  const background =
+    hasSourceImage &&
+    /\b(fundo|background|cenário|cenario)\b/i.test(text) &&
+    /\b(troqu|mud|remov|tir|substitu)\w*/i.test(text);
+  const removeReplace =
+    hasSourceImage &&
+    /\b(remov|retir|tir|apag|substitu|troqu|replace)\w*/i.test(text);
+  const identityLock =
+    hasSourceImage &&
+    /\b(mesma pessoa|mesmo rosto|preserv.*rosto|não mude.*rosto|nao mude.*rosto|identidade|personagem consistente)\b/i.test(text);
+
+  let mode = "create";
+  if (hasSourceImage) {
+    if (enhance) mode = "enhance";
+    else if (background) mode = "background";
+    else if (identityLock) mode = "identity_lock";
+    else if (removeReplace) mode = "remove_replace";
+    else mode = "strict_edit";
+  } else if (poster) {
+    mode = "poster";
+  }
+
+  const preservationLevel =
+    !hasSourceImage
+      ? "medium"
+      : mode === "background" || mode === "remove_replace"
+        ? "high"
+        : "maximum";
+
+  const editStrength =
+    mode === "enhance"
+      ? 0.12
+      : mode === "strict_edit"
+        ? 0.22
+        : mode === "identity_lock"
+          ? 0.28
+          : mode === "remove_replace"
+            ? 0.38
+            : mode === "background"
+              ? 0.6
+              : 0.75;
+
+  const aspectRatioMatch =
+    text.match(/\b(1:1|16:9|9:16|4:5|5:4|3:2|2:3)\b/);
+
+  return {
+    mode,
+    intentSummary: String(prompt || "").slice(0, 1200),
+    preservationLevel,
+    editStrength,
+    localized:
+      ["strict_edit", "enhance", "remove_replace", "identity_lock"].includes(mode),
+    requiresIdentityLock:
+      hasSourceImage &&
+      (mode === "identity_lock" || mode === "strict_edit" || mode === "enhance"),
+    requiresTextAccuracy:
+      poster || /\b(texto|escreva|escrito|frase|título|titulo|logo)\b/i.test(text),
+    targets: [],
+    successCriteria: [],
+    riskFlags: hasSourceImage
+      ? ["identity drift", "composition drift", "unrequested changes"]
+      : [],
+    aspectRatio: aspectRatioMatch?.[1] || (poster ? "4:5" : "1:1"),
+  };
+}
+
+function cleanStringArray(value, max = 14, maxChars = 700) {
+  return Array.isArray(value)
+    ? value
+        .map((x) => String(x || "").trim().slice(0, maxChars))
+        .filter(Boolean)
+        .slice(0, max)
+    : [];
+}
+
+async function classifyImageTask({
+  prompt,
+  hasSourceImage,
+  previousPrompt,
+  learnedContext,
+  sessionId,
+  env,
+}) {
+  const fallback = imageTaskFallback(prompt, hasSourceImage);
+  if (!env.AI) return fallback;
+
+  const attempt = await runTextChat(
+    [
+      {
+        role: "system",
+        content: [
+          "Você é o Image Task Router da NEXUS AI.",
+          "Classifique precisamente a tarefa visual antes de qualquer geração.",
+          "Modos permitidos: create, strict_edit, enhance, remove_replace, poster, identity_lock, background.",
+          "Se houver imagem de referência, prefira preservar tudo que não foi explicitamente pedido.",
+          "enhance significa melhorar qualidade/restaurar sem reinventar conteúdo.",
+          "strict_edit significa alteração localizada e conservadora.",
+          "identity_lock significa que a identidade do sujeito é prioridade absoluta.",
+          "poster significa composição gráfica/publicitária criada do zero.",
+          "Retorne SOMENTE JSON válido:",
+          "{mode:string,intentSummary:string,preservationLevel:'low|medium|high|maximum',editStrength:number,localized:boolean,requiresIdentityLock:boolean,requiresTextAccuracy:boolean,targets:string[],successCriteria:string[],riskFlags:string[],aspectRatio:'1:1|16:9|9:16|4:5|5:4|3:2|2:3'}.",
+          "editStrength vai de 0 a 1: quanto menor, menos liberdade para alterar a referência.",
+          "Não invente mudanças que o usuário não solicitou.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          "TEM IMAGEM DE REFERÊNCIA: " + (hasSourceImage ? "sim" : "não"),
+          "PEDIDO:\n" + String(prompt || ""),
+          previousPrompt
+            ? "CONTEXTO VISUAL ANTERIOR:\n" + String(previousPrompt).slice(0, 4500)
+            : "",
+          learnedContext
+            ? "APRENDIZADO RELEVANTE:\n" + learnedContext
+            : "",
+        ].filter(Boolean).join("\n\n"),
+      },
+    ],
+    env,
+    {
+      cloudflareModel: CF_CODE_MODEL,
+      maxTokens: 850,
+      temperature: 0.03,
+      topP: 0.78,
+      sessionId: sessionId ? sessionId + "-image-router" : "",
+      cloudflareOnly: true,
+    }
+  );
+
+  if (!attempt?.ok) return fallback;
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
+  if (!parsed || typeof parsed !== "object") return fallback;
+
+  const validModes = new Set([
+    "create",
+    "strict_edit",
+    "enhance",
+    "remove_replace",
+    "poster",
+    "identity_lock",
+    "background",
+  ]);
+  const validPreservation = new Set(["low", "medium", "high", "maximum"]);
+  const validRatios = new Set(["1:1", "16:9", "9:16", "4:5", "5:4", "3:2", "2:3"]);
+
+  const mode = validModes.has(String(parsed.mode))
+    ? String(parsed.mode)
+    : fallback.mode;
+
+  return {
+    mode,
+    intentSummary: String(parsed.intentSummary || fallback.intentSummary).slice(0, 1400),
+    preservationLevel: validPreservation.has(String(parsed.preservationLevel))
+      ? String(parsed.preservationLevel)
+      : fallback.preservationLevel,
+    editStrength: Math.max(
+      0,
+      Math.min(
+        1,
+        Number.isFinite(Number(parsed.editStrength))
+          ? Number(parsed.editStrength)
+          : fallback.editStrength
+      )
+    ),
+    localized:
+      typeof parsed.localized === "boolean"
+        ? parsed.localized
+        : fallback.localized,
+    requiresIdentityLock:
+      typeof parsed.requiresIdentityLock === "boolean"
+        ? parsed.requiresIdentityLock
+        : fallback.requiresIdentityLock,
+    requiresTextAccuracy:
+      typeof parsed.requiresTextAccuracy === "boolean"
+        ? parsed.requiresTextAccuracy
+        : fallback.requiresTextAccuracy,
+    targets: cleanStringArray(parsed.targets, 10),
+    successCriteria: cleanStringArray(parsed.successCriteria, 12),
+    riskFlags: cleanStringArray(parsed.riskFlags, 12),
+    aspectRatio: validRatios.has(String(parsed.aspectRatio))
+      ? String(parsed.aspectRatio)
+      : fallback.aspectRatio,
+  };
+}
+
+async function buildVisualContextV2({
+  sourceImage,
+  sourceDescription,
+  prompt,
+  taskPlan,
+  sessionId,
+  env,
+}) {
+  const fallback = {
+    subjectType: "",
+    subjectCount: null,
+    facePresent: null,
+    primarySubject: "",
+    identityFeatures: [],
+    clothing: [],
+    pose: "",
+    framing: "",
+    background: "",
+    lighting: "",
+    style: "",
+    colors: [],
+    textElements: [],
+    protectedElements: [],
+    editableElements: taskPlan?.targets || [],
+    spatialAnchors: [],
+    riskAreas: taskPlan?.riskFlags || [],
+  };
+
+  if (!env.AI || !sourceImage) return fallback;
+
+  let dataUrl = "";
+  try {
+    dataUrl = await blobToDataUrlServer(sourceImage);
+  } catch {}
+
+  const content = [
+    {
+      type: "text",
+      text: [
+        "Analise a imagem de referência para uma edição de alta fidelidade.",
+        "Retorne SOMENTE JSON válido no schema:",
+        "{subjectType:string,subjectCount:number|null,facePresent:boolean|null,primarySubject:string,identityFeatures:string[],clothing:string[],pose:string,framing:string,background:string,lighting:string,style:string,colors:string[],textElements:string[],protectedElements:string[],editableElements:string[],spatialAnchors:string[],riskAreas:string[]}.",
+        "protectedElements deve conter tudo que precisa permanecer visualmente igual.",
+        "spatialAnchors deve registrar posições relativas importantes para preservar composição.",
+        "Não identifique pessoas reais; descreva apenas traços visuais necessários para preservar a aparência.",
+        "PEDIDO DO USUÁRIO: " + String(prompt || ""),
+        "PLANO: " + JSON.stringify(taskPlan || {}),
+        sourceDescription
+          ? "DESCRIÇÃO EXTRAÍDA: " + String(sourceDescription).slice(0, 10000)
+          : "",
+      ].filter(Boolean).join("\n\n"),
+    },
+    ...(dataUrl
+      ? [{ type: "image_url", image_url: { url: dataUrl } }]
+      : []),
+  ];
+
+  const attempt = await runTextChat(
+    [
+      {
+        role: "system",
+        content:
+          "Você é o Visual Context Extractor da NEXUS AI. Extraia somente contexto visual útil para preservar a referência durante edição.",
+      },
+      { role: "user", content },
+    ],
+    env,
+    {
+      cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
+      maxTokens: 1150,
+      temperature: 0.02,
+      topP: 0.75,
+      sessionId: sessionId ? sessionId + "-visual-context" : "",
+      cloudflareOnly: true,
+    }
+  );
+
+  if (!attempt?.ok) return fallback;
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
+  if (!parsed || typeof parsed !== "object") return fallback;
+
+  return {
+    subjectType: String(parsed.subjectType || "").slice(0, 300),
+    subjectCount: Number.isFinite(Number(parsed.subjectCount))
+      ? Math.max(0, Math.round(Number(parsed.subjectCount)))
+      : null,
+    facePresent:
+      typeof parsed.facePresent === "boolean" ? parsed.facePresent : null,
+    primarySubject: String(parsed.primarySubject || "").slice(0, 1200),
+    identityFeatures: cleanStringArray(parsed.identityFeatures, 14),
+    clothing: cleanStringArray(parsed.clothing, 12),
+    pose: String(parsed.pose || "").slice(0, 1000),
+    framing: String(parsed.framing || "").slice(0, 1000),
+    background: String(parsed.background || "").slice(0, 1800),
+    lighting: String(parsed.lighting || "").slice(0, 1000),
+    style: String(parsed.style || "").slice(0, 1000),
+    colors: cleanStringArray(parsed.colors, 12),
+    textElements: cleanStringArray(parsed.textElements, 12),
+    protectedElements: cleanStringArray(parsed.protectedElements, 18),
+    editableElements: cleanStringArray(parsed.editableElements, 14),
+    spatialAnchors: cleanStringArray(parsed.spatialAnchors, 14),
+    riskAreas: cleanStringArray(parsed.riskAreas, 14),
+  };
+}
+
 async function buildVisualEditSpec({
   sourceDescription,
   prompt,
   previousPrompt,
+  taskPlan,
+  visualContext,
   sessionId,
   env,
 }) {
-  if (!sourceDescription || !env.AI) return null;
+  if (!sourceDescription || !env.AI) {
+    return {
+      operationType: taskPlan?.mode || "strict_edit",
+      targetChange: taskPlan?.targets || [String(prompt || "")],
+      preserve: visualContext?.protectedElements || [],
+      forbiddenChanges: taskPlan?.riskFlags || [],
+      identityAnchor: visualContext?.primarySubject || "",
+      compositionAnchor: [
+        visualContext?.pose,
+        visualContext?.framing,
+        ...(visualContext?.spatialAnchors || []),
+      ].filter(Boolean).join("; "),
+      styleAnchor: [
+        visualContext?.style,
+        visualContext?.lighting,
+      ].filter(Boolean).join("; "),
+      editStrength: Number(taskPlan?.editStrength ?? 0.22),
+      localized: Boolean(taskPlan?.localized),
+      successCriteria: taskPlan?.successCriteria || [],
+      failureRisks: taskPlan?.riskFlags || [],
+      textRequirements: visualContext?.textElements || [],
+    };
+  }
 
   const learnedContext = formatLearningContext(
     await getLearningContext(env, "image")
@@ -1477,90 +1809,235 @@ async function buildVisualEditSpec({
       {
         role: "system",
         content: [
-          "Você é o Edit Planner visual da NEXUS AI.",
-          "Transforme o pedido em uma especificação conservadora de edição.",
-          "A prioridade absoluta é preservar a imagem original e alterar somente o que foi pedido.",
-          "Retorne SOMENTE JSON válido no schema:",
-          "{preserve:string[], modify:string[], forbiddenChanges:string[], identityAnchor:string, compositionAnchor:string, styleAnchor:string}.",
-          "preserve deve listar sujeito principal, identidade, pose, enquadramento, cenário e estilo que não podem mudar.",
-          "forbiddenChanges deve listar alterações que seriam erro.",
-          "Não invente mudanças que o usuário não pediu.",
+          "Você é o Edit Planner V2 da NEXUS AI.",
+          "Crie uma especificação cirúrgica de edição de imagem.",
+          "A prioridade absoluta é cumprir o pedido e preservar tudo que não foi solicitado.",
+          "Retorne SOMENTE JSON válido:",
+          "{operationType:string,targetChange:string[],preserve:string[],forbiddenChanges:string[],identityAnchor:string,compositionAnchor:string,styleAnchor:string,editStrength:number,localized:boolean,successCriteria:string[],failureRisks:string[],textRequirements:string[]}.",
+          "editStrength vai de 0 a 1 e deve respeitar o plano fornecido.",
+          "Se preservationLevel for maximum, qualquer mudança não solicitada é falha.",
+          "Preserve identidade visual, pose, enquadramento, fundo, iluminação e detalhes relevantes quando não forem alvos da edição.",
+          "Não invente pessoas, objetos, texto, cenário ou estilo.",
         ].join(" "),
       },
       {
         role: "user",
-        content:
-          "DESCRIÇÃO DA IMAGEM ORIGINAL:\n" +
-          sourceDescription +
-          "\n\nPEDIDO ATUAL:\n" +
-          prompt +
-          (previousPrompt ? "\n\nCONTEXTO VISUAL ANTERIOR:\n" + previousPrompt : "") +
-          (learnedContext ? "\n\nLIÇÕES APRENDIDAS:\n" + learnedContext : ""),
+        content: [
+          "DESCRIÇÃO ORIGINAL:\n" + sourceDescription,
+          "CONTEXTO VISUAL ESTRUTURADO:\n" + JSON.stringify(visualContext || {}),
+          "IMAGE TASK PLAN:\n" + JSON.stringify(taskPlan || {}),
+          "PEDIDO ATUAL:\n" + prompt,
+          previousPrompt
+            ? "CONTEXTO VISUAL ANTERIOR:\n" + previousPrompt
+            : "",
+          learnedContext
+            ? "LIÇÕES APRENDIDAS:\n" + learnedContext
+            : "",
+        ].filter(Boolean).join("\n\n"),
       },
     ],
     env,
     {
       cloudflareModel: CF_CODE_MODEL,
-      maxTokens: 850,
-      temperature: 0.05,
-      topP: 0.85,
-      sessionId: sessionId ? sessionId + "-edit-spec" : "",
+      maxTokens: 1100,
+      temperature: 0.025,
+      topP: 0.76,
+      sessionId: sessionId ? sessionId + "-edit-spec-v2" : "",
       cloudflareOnly: true,
     }
   );
 
-  if (!attempt?.ok) return null;
-  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!attempt?.ok) {
+    return buildVisualEditSpec({
+      sourceDescription: "",
+      prompt,
+      previousPrompt,
+      taskPlan,
+      visualContext,
+      sessionId,
+      env: {},
+    });
+  }
 
-  const arr = (value, max = 12) =>
-    Array.isArray(value)
-      ? value.map((x) => String(x).trim()).filter(Boolean).slice(0, max)
-      : [];
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), null);
+  if (!parsed || typeof parsed !== "object") {
+    return buildVisualEditSpec({
+      sourceDescription: "",
+      prompt,
+      previousPrompt,
+      taskPlan,
+      visualContext,
+      sessionId,
+      env: {},
+    });
+  }
 
   return {
-    preserve: arr(parsed.preserve),
-    modify: arr(parsed.modify),
-    forbiddenChanges: arr(parsed.forbiddenChanges),
-    identityAnchor: String(parsed.identityAnchor || "").slice(0, 1500),
-    compositionAnchor: String(parsed.compositionAnchor || "").slice(0, 1500),
-    styleAnchor: String(parsed.styleAnchor || "").slice(0, 1500),
+    operationType: String(parsed.operationType || taskPlan?.mode || "strict_edit").slice(0, 80),
+    targetChange: cleanStringArray(parsed.targetChange, 14),
+    preserve: cleanStringArray(parsed.preserve, 20),
+    forbiddenChanges: cleanStringArray(parsed.forbiddenChanges, 20),
+    identityAnchor: String(parsed.identityAnchor || visualContext?.primarySubject || "").slice(0, 1800),
+    compositionAnchor: String(parsed.compositionAnchor || "").slice(0, 1800),
+    styleAnchor: String(parsed.styleAnchor || "").slice(0, 1800),
+    editStrength: Math.max(
+      0,
+      Math.min(
+        1,
+        Number.isFinite(Number(parsed.editStrength))
+          ? Number(parsed.editStrength)
+          : Number(taskPlan?.editStrength ?? 0.22)
+      )
+    ),
+    localized:
+      typeof parsed.localized === "boolean"
+        ? parsed.localized
+        : Boolean(taskPlan?.localized),
+    successCriteria: cleanStringArray(
+      parsed.successCriteria?.length
+        ? parsed.successCriteria
+        : taskPlan?.successCriteria,
+      14
+    ),
+    failureRisks: cleanStringArray(
+      parsed.failureRisks?.length
+        ? parsed.failureRisks
+        : taskPlan?.riskFlags,
+      14
+    ),
+    textRequirements: cleanStringArray(parsed.textRequirements, 12),
   };
 }
 
-function buildStrictEditPrompt(userPrompt, spec) {
+function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
+  const mode = taskPlan?.mode || spec?.operationType || "strict_edit";
+
+  const modeInstruction = {
+    enhance:
+      "ENHANCEMENT MODE: improve clarity, detail fidelity and perceived quality only. Do not redesign, beautify, replace, restyle or change the scene.",
+    strict_edit:
+      "STRICT LOCAL EDIT MODE: make only the requested localized change. Everything outside the requested target must remain visually unchanged.",
+    remove_replace:
+      "SURGICAL REMOVE/REPLACE MODE: edit only the specified object/region and reconstruct the smallest necessary surrounding area naturally.",
+    background:
+      "BACKGROUND MODE: change only the requested background while locking foreground subject identity, face, hair, body, clothing, pose and proportions.",
+    identity_lock:
+      "IDENTITY LOCK MODE: subject identity is the highest priority. Preserve the same facial structure, hair, age appearance, body proportions and recognizable visual traits.",
+  }[mode] ||
+    "REFERENCE EDIT MODE: preserve the original image and change only what was explicitly requested.";
+
   if (!spec) {
     return [
       "Edit image 0.",
-      "Preserve the exact same main subject, identity, pose, framing, composition, background, colors and visual style unless the user explicitly asks to change them.",
-      "Change only what the user requested.",
-      "Do not redesign, replace or reinterpret the scene.",
+      modeInstruction,
+      "Treat image 0 as the authoritative visual source.",
+      "Preserve the exact same main subject, identity, pose, framing, composition, background, lighting, colors and style unless the user explicitly requests a change.",
       "USER REQUEST:",
       userPrompt,
     ].join(" ");
   }
 
   return [
-    "Edit image 0 conservatively.",
-    "The output must remain recognizably the same original image.",
+    "Edit image 0 with maximum reference fidelity.",
+    modeInstruction,
+    "PRESERVATION LEVEL: " + String(taskPlan?.preservationLevel || "maximum"),
+    "EDIT STRENGTH TARGET: " + Number(spec.editStrength ?? taskPlan?.editStrength ?? 0.22).toFixed(2),
+    spec.localized
+      ? "LOCALITY RULE: confine visual changes to the requested target region; avoid global reinterpretation."
+      : "",
     spec.identityAnchor ? "IDENTITY ANCHOR: " + spec.identityAnchor : "",
     spec.compositionAnchor ? "COMPOSITION ANCHOR: " + spec.compositionAnchor : "",
-    spec.styleAnchor ? "STYLE ANCHOR: " + spec.styleAnchor : "",
-    spec.preserve.length ? "MUST PRESERVE: " + spec.preserve.join("; ") : "",
-    spec.modify.length ? "MODIFY ONLY: " + spec.modify.join("; ") : "",
-    spec.forbiddenChanges.length
+    spec.styleAnchor ? "STYLE/LIGHTING ANCHOR: " + spec.styleAnchor : "",
+    spec.preserve?.length ? "MUST PRESERVE: " + spec.preserve.join("; ") : "",
+    visualContext?.spatialAnchors?.length
+      ? "SPATIAL ANCHORS: " + visualContext.spatialAnchors.join("; ")
+      : "",
+    spec.targetChange?.length ? "MODIFY ONLY: " + spec.targetChange.join("; ") : "",
+    spec.successCriteria?.length
+      ? "SUCCESS CRITERIA: " + spec.successCriteria.join("; ")
+      : "",
+    spec.forbiddenChanges?.length
       ? "FORBIDDEN CHANGES: " + spec.forbiddenChanges.join("; ")
       : "",
+    spec.failureRisks?.length
+      ? "KNOWN FAILURE RISKS TO AVOID: " + spec.failureRisks.join("; ")
+      : "",
+    spec.textRequirements?.length
+      ? "TEXT MUST REMAIN EXACT: " + spec.textRequirements.join("; ")
+      : "",
     "USER REQUEST: " + userPrompt,
-    "Do not add unrelated people, objects, text, scenery or stylistic changes.",
+    "Use image 0 as ground truth. Do not add unrelated people, objects, text, scenery, camera changes or stylistic changes.",
   ].filter(Boolean).join(" ");
 }
 
+function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContext) {
+  const base = String(expandedPrompt || userPrompt || "").trim();
+  if (taskPlan?.mode !== "poster") return base;
+
+  return [
+    base,
+    "GRAPHIC DESIGN / POSTER MODE.",
+    "Build clear visual hierarchy, intentional spacing, strong focal point and professional composition.",
+    taskPlan.requiresTextAccuracy
+      ? "Any user-specified text must be copied exactly, character for character. Do not invent extra copy."
+      : "",
+    taskPlan.successCriteria?.length
+      ? "SUCCESS CRITERIA: " + taskPlan.successCriteria.join("; ")
+      : "",
+    learnedContext
+      ? "RELEVANT LEARNED PREFERENCES: " + learnedContext.slice(0, 2400)
+      : "",
+  ].filter(Boolean).join(" ");
+}
+
+function visualCandidateScore(verification, taskPlan) {
+  if (!verification?.verified) return -1;
+  const score = Number(verification.score || 0);
+  const request = Number(verification.requestFulfillment || 0);
+  const identity = Number(verification.identity ?? score);
+  const composition = Number(verification.composition ?? score);
+  const background = Number(verification.backgroundPreservation ?? score);
+  const style = Number(verification.stylePreservation ?? score);
+  const artifactFree = Number(verification.artifactFree ?? score);
+  const textAccuracy = Number(
+    verification.textAccuracy ??
+    (taskPlan?.requiresTextAccuracy ? 0 : score)
+  );
+
+  const preservationHeavy =
+    ["maximum", "high"].includes(taskPlan?.preservationLevel);
+
+  return preservationHeavy
+    ? (
+        score * 0.18 +
+        request * 0.22 +
+        identity * 0.23 +
+        composition * 0.12 +
+        background * 0.08 +
+        style * 0.07 +
+        artifactFree * 0.07 +
+        textAccuracy * 0.03
+      )
+    : (
+        score * 0.28 +
+        request * 0.31 +
+        identity * 0.1 +
+        composition * 0.08 +
+        background * 0.04 +
+        style * 0.07 +
+        artifactFree * 0.08 +
+        textAccuracy * 0.04
+      );
+}
+
 async function verifyVisualEdit({
+  originalBlob,
   originalDescription,
   resultBlob,
   prompt,
   spec,
+  taskPlan,
+  visualContext,
   sessionId,
   env,
 }) {
@@ -1571,6 +2048,7 @@ async function verifyVisualEdit({
       score: null,
       retryInstruction: "",
       issues: [],
+      unwantedChanges: [],
     };
   }
 
@@ -1580,54 +2058,106 @@ async function verifyVisualEdit({
     "resultado-editado"
   );
 
-  if (!resultDescription) {
-    return {
-      verified: false,
-      pass: true,
-      score: null,
-      retryInstruction: "",
-      issues: [],
-    };
+  let originalDataUrl = "";
+  let resultDataUrl = "";
+  try {
+    if (originalBlob) originalDataUrl = await blobToDataUrlServer(originalBlob);
+    resultDataUrl = await blobToDataUrlServer(resultBlob);
+  } catch {}
+
+  const schemaInstruction = [
+    "Retorne SOMENTE JSON válido:",
+    "{pass:boolean,score:number,identity:number,composition:number,backgroundPreservation:number,stylePreservation:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,unwantedChanges:string[],issues:string[],retryInstruction:string}.",
+    "Todos os scores vão de 0 a 1.",
+    "Avalie a IMAGEM ORIGINAL contra o RESULTADO, não apenas estética isolada.",
+    "Mudanças não solicitadas reduzem fortemente o score.",
+    "Se preservationLevel=maximum, identidade/composição/fundo/estilo devem ser tratados com rigor.",
+    "textAccuracy mede fidelidade de texto existente ou solicitado; se não houver texto relevante, use 1.",
+  ].join(" ");
+
+  let attempt = null;
+
+  if (originalDataUrl && resultDataUrl) {
+    attempt = await runTextChat(
+      [
+        {
+          role: "system",
+          content:
+            "Você é o Visual Verifier V2 da NEXUS AI. Compare duas imagens diretamente e seja rigoroso com identidade, composição e alterações não solicitadas. " +
+            schemaInstruction,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "IMAGEM 1 = ORIGINAL / AUTORIDADE VISUAL.",
+                "IMAGEM 2 = RESULTADO DA EDIÇÃO.",
+                "PEDIDO: " + prompt,
+                "TASK PLAN: " + JSON.stringify(taskPlan || {}),
+                "EDIT SPEC: " + JSON.stringify(spec || {}),
+                "CONTEXTO: " + JSON.stringify(visualContext || {}),
+                originalDescription
+                  ? "DESCRIÇÃO ORIGINAL: " + originalDescription.slice(0, 9000)
+                  : "",
+                resultDescription
+                  ? "DESCRIÇÃO RESULTADO: " + resultDescription.slice(0, 9000)
+                  : "",
+              ].filter(Boolean).join("\n\n"),
+            },
+            { type: "image_url", image_url: { url: originalDataUrl } },
+            {
+              type: "text",
+              text: "Agora veja a IMAGEM 2, que é o resultado:",
+            },
+            { type: "image_url", image_url: { url: resultDataUrl } },
+          ],
+        },
+      ],
+      env,
+      {
+        cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
+        maxTokens: 1250,
+        temperature: 0.01,
+        topP: 0.7,
+        sessionId: sessionId ? sessionId + "-visual-verify-v2" : "",
+        cloudflareOnly: true,
+      }
+    );
   }
 
-  const attempt = await runTextChat(
-    [
+  if (!attempt?.ok && resultDescription) {
+    attempt = await runTextChat(
+      [
+        {
+          role: "system",
+          content:
+            "Você é o Visual Verifier V2 da NEXUS AI. Compare descrições e o pedido com rigor. " +
+            schemaInstruction,
+        },
+        {
+          role: "user",
+          content: [
+            "ORIGINAL:\n" + originalDescription,
+            "PEDIDO:\n" + prompt,
+            "TASK PLAN:\n" + JSON.stringify(taskPlan || {}),
+            "SPEC:\n" + JSON.stringify(spec || {}),
+            "RESULTADO:\n" + resultDescription,
+          ].join("\n\n"),
+        },
+      ],
+      env,
       {
-        role: "system",
-        content: [
-          "Você é o Visual Verifier da NEXUS AI.",
-          "Compare descrição original, pedido e descrição do resultado.",
-          "Julgue preservação de identidade, composição, pose, cenário e estilo, além do cumprimento do pedido.",
-          "Uma edição que troca o sujeito, inventa pessoas/objetos ou muda o cenário sem pedido deve falhar.",
-          "Retorne SOMENTE JSON:",
-          "{pass:boolean, score:number, identity:number, composition:number, requestFulfillment:number, unwantedChanges:string[], issues:string[], retryInstruction:string}.",
-          "Todos os scores vão de 0 a 1.",
-          "pass=true somente se score >= 0.80, identity >= 0.80, composition >= 0.72 e requestFulfillment >= 0.72.",
-        ].join(" "),
-      },
-      {
-        role: "user",
-        content:
-          "ORIGINAL:\n" +
-          originalDescription +
-          "\n\nPEDIDO:\n" +
-          prompt +
-          "\n\nSPEC:\n" +
-          JSON.stringify(spec || {}) +
-          "\n\nRESULTADO:\n" +
-          resultDescription,
-      },
-    ],
-    env,
-    {
-      cloudflareModel: CF_CODE_MODEL,
-      maxTokens: 900,
-      temperature: 0.03,
-      topP: 0.8,
-      sessionId: sessionId ? sessionId + "-visual-verify" : "",
-      cloudflareOnly: true,
-    }
-  );
+        cloudflareModel: CF_CODE_MODEL,
+        maxTokens: 1100,
+        temperature: 0.02,
+        topP: 0.74,
+        sessionId: sessionId ? sessionId + "-visual-verify-text-fallback" : "",
+        cloudflareOnly: true,
+      }
+    );
+  }
 
   if (!attempt?.ok) {
     return {
@@ -1636,24 +2166,46 @@ async function verifyVisualEdit({
       score: null,
       retryInstruction: "",
       issues: [],
+      unwantedChanges: [],
+      resultDescription,
     };
   }
 
   const parsed = parseJsonLooseText(extractModelText(attempt.raw), {});
-  const score = Math.max(0, Math.min(1, Number(parsed?.score ?? 0.5)));
-  const identity = Math.max(0, Math.min(1, Number(parsed?.identity ?? score)));
-  const composition = Math.max(0, Math.min(1, Number(parsed?.composition ?? score)));
-  const requestFulfillment = Math.max(
-    0,
-    Math.min(1, Number(parsed?.requestFulfillment ?? score))
+  const clamp = (value, fallback = 0.5) =>
+    Math.max(
+      0,
+      Math.min(
+        1,
+        Number.isFinite(Number(value)) ? Number(value) : fallback
+      )
+    );
+
+  const score = clamp(parsed?.score);
+  const identity = clamp(parsed?.identity, score);
+  const composition = clamp(parsed?.composition, score);
+  const backgroundPreservation = clamp(parsed?.backgroundPreservation, score);
+  const stylePreservation = clamp(parsed?.stylePreservation, score);
+  const requestFulfillment = clamp(parsed?.requestFulfillment, score);
+  const artifactFree = clamp(parsed?.artifactFree, score);
+  const textAccuracy = clamp(
+    parsed?.textAccuracy,
+    taskPlan?.requiresTextAccuracy ? score : 1
   );
+  const realism = clamp(parsed?.realism, artifactFree);
+
+  const strict = taskPlan?.preservationLevel === "maximum";
+  const high = taskPlan?.preservationLevel === "high";
 
   const pass =
-    parsed?.pass !== false &&
-    score >= 0.8 &&
-    identity >= 0.8 &&
-    composition >= 0.72 &&
-    requestFulfillment >= 0.72;
+    score >= (strict ? 0.82 : high ? 0.79 : 0.76) &&
+    requestFulfillment >= 0.74 &&
+    artifactFree >= 0.7 &&
+    (!taskPlan?.requiresIdentityLock || identity >= (strict ? 0.88 : 0.82)) &&
+    (!strict || composition >= 0.8) &&
+    (!strict || backgroundPreservation >= 0.78) &&
+    (!strict || stylePreservation >= 0.78) &&
+    (!taskPlan?.requiresTextAccuracy || textAccuracy >= 0.82);
 
   return {
     verified: true,
@@ -1661,15 +2213,61 @@ async function verifyVisualEdit({
     score,
     identity,
     composition,
+    backgroundPreservation,
+    stylePreservation,
     requestFulfillment,
-    retryInstruction: String(parsed?.retryInstruction || "").slice(0, 2500),
-    issues: Array.isArray(parsed?.issues)
-      ? parsed.issues.map((x) => String(x)).slice(0, 10)
-      : [],
-    unwantedChanges: Array.isArray(parsed?.unwantedChanges)
-      ? parsed.unwantedChanges.map((x) => String(x)).slice(0, 10)
-      : [],
+    artifactFree,
+    textAccuracy,
+    realism,
+    retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
+    issues: cleanStringArray(parsed?.issues, 14),
+    unwantedChanges: cleanStringArray(parsed?.unwantedChanges, 14),
     resultDescription,
+  };
+}
+
+function roundImageDimension(value) {
+  const rounded = Math.round(Number(value || 1024) / 64) * 64;
+  return Math.max(256, Math.min(1920, rounded));
+}
+
+function computeImageOutputSize({
+  sourceWidth,
+  sourceHeight,
+  aspectRatio,
+  quality,
+}) {
+  const maxSide = quality === "quality" ? 1536 : 1024;
+
+  let ratio = 1;
+  const sw = Number(sourceWidth);
+  const sh = Number(sourceHeight);
+
+  if (sw > 0 && sh > 0) {
+    ratio = sw / sh;
+  } else {
+    const ratios = {
+      "1:1": 1,
+      "16:9": 16 / 9,
+      "9:16": 9 / 16,
+      "4:5": 4 / 5,
+      "5:4": 5 / 4,
+      "3:2": 3 / 2,
+      "2:3": 2 / 3,
+    };
+    ratio = ratios[aspectRatio] || 1;
+  }
+
+  if (ratio >= 1) {
+    return {
+      width: roundImageDimension(maxSide),
+      height: roundImageDimension(maxSide / ratio),
+    };
+  }
+
+  return {
+    width: roundImageDimension(maxSide * ratio),
+    height: roundImageDimension(maxSide),
   };
 }
 
@@ -1678,6 +2276,9 @@ async function runCloudflareImage({
   sourceImage,
   quality,
   modelOverride,
+  width = 1024,
+  height = 1024,
+  editStrength = 0.35,
   env,
 }) {
   if (!env.AI) throw new Error("Workers AI não disponível.");
@@ -1695,9 +2296,14 @@ async function runCloudflareImage({
     form.append("input_image_0", sourceImage, "reference.jpg");
   }
   form.append("prompt", prompt);
-  form.append("width", "1024");
-  form.append("height", "1024");
-  form.append("guidance", sourceImage ? "4.0" : "3.5");
+  form.append("width", String(roundImageDimension(width)));
+  form.append("height", String(roundImageDimension(height)));
+  form.append(
+    "guidance",
+    sourceImage
+      ? String(Math.max(2.8, Math.min(5.2, 3.4 + Number(editStrength || 0.35) * 1.2)))
+      : "3.5"
+  );
 
   const serialized = new Response(form);
   const result = await env.AI.run(model, {
@@ -2173,6 +2779,7 @@ async function handleMemory(request, env) {
   });
 }
 
+
 async function handleImage(request, env) {
   const body = await request.json();
   const prompt = String(body.prompt || "").trim();
@@ -2184,6 +2791,8 @@ async function handleImage(request, env) {
   const sessionId = String(body.sessionId || "").slice(0, 128);
   const requestedQuality =
     body.quality === "quality" ? "quality" : "fast";
+  const sourceWidth = Number(body.sourceWidth || 0);
+  const sourceHeight = Number(body.sourceHeight || 0);
   const startedAt = Date.now();
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
@@ -2192,6 +2801,18 @@ async function handleImage(request, env) {
 
   const imageLearningContext =
     await getLearningContext(env, "image");
+  const learnedContextText =
+    formatLearningContext(imageLearningContext);
+
+  const taskPlan = await classifyImageTask({
+    prompt,
+    hasSourceImage: Boolean(sourceImage),
+    previousPrompt,
+    learnedContext: learnedContextText,
+    sessionId,
+    env,
+  });
+
   const imageRoute = resolveAdaptiveImageRoute({
     requestedQuality,
     hasSourceImage: Boolean(sourceImage),
@@ -2201,6 +2822,7 @@ async function handleImage(request, env) {
   const quality = imageRoute.quality;
 
   let sourceDescription = "";
+  let visualContext = null;
   let editSpec = null;
   let expansion = { prompt, expanded: false, model: null };
 
@@ -2211,10 +2833,21 @@ async function handleImage(request, env) {
       "imagem-original"
     );
 
+    visualContext = await buildVisualContextV2({
+      sourceImage,
+      sourceDescription,
+      prompt,
+      taskPlan,
+      sessionId,
+      env,
+    });
+
     editSpec = await buildVisualEditSpec({
       sourceDescription,
       prompt,
       previousPrompt,
+      taskPlan,
+      visualContext,
       sessionId,
       env,
     });
@@ -2231,13 +2864,26 @@ async function handleImage(request, env) {
   }
 
   const promptForModel = sourceImage
-    ? buildStrictEditPrompt(prompt, editSpec)
-    : expansion.prompt;
+    ? buildStrictEditPrompt(
+        prompt,
+        editSpec,
+        taskPlan,
+        visualContext
+      )
+    : buildCreatePromptV2(
+        prompt,
+        expansion.prompt,
+        taskPlan,
+        learnedContextText
+      );
 
   let cloudflareImageError = null;
 
   if (env.AI) {
-    const qualities = quality === "quality" ? ["quality", "fast"] : ["fast"];
+    const qualities =
+      quality === "quality"
+        ? ["quality", "fast"]
+        : ["fast"];
 
     for (const imageQuality of qualities) {
       try {
@@ -2245,21 +2891,38 @@ async function handleImage(request, env) {
           imageQuality === quality
             ? imageRoute.model
             : null;
+
+        const outputSize = computeImageOutputSize({
+          sourceWidth: sourceImage ? sourceWidth : 0,
+          sourceHeight: sourceImage ? sourceHeight : 0,
+          aspectRatio: taskPlan.aspectRatio,
+          quality: imageQuality,
+        });
+
         let generated = await runCloudflareImage({
           quality: imageQuality,
           modelOverride: adaptiveModelForAttempt,
           prompt: promptForModel,
           sourceImage,
+          width: outputSize.width,
+          height: outputSize.height,
+          editStrength: taskPlan.editStrength,
           env,
         });
 
         let retryCount = 0;
         let verification = sourceImage
           ? await verifyVisualEdit({
+              originalBlob: sourceImage,
               originalDescription: sourceDescription,
-              resultBlob: new Blob([generated.bytes], { type: "image/jpeg" }),
+              resultBlob: new Blob(
+                [generated.bytes],
+                { type: "image/jpeg" }
+              ),
               prompt,
               spec: editSpec,
+              taskPlan,
+              visualContext,
               sessionId,
               env,
             })
@@ -2269,30 +2932,69 @@ async function handleImage(request, env) {
               score: null,
               retryInstruction: "",
               issues: [],
+              unwantedChanges: [],
             };
 
         let best = {
           generated,
           verification,
           retryCount,
+          candidateScore:
+            sourceImage
+              ? visualCandidateScore(
+                  verification,
+                  taskPlan
+                )
+              : 1,
         };
 
-        if (sourceImage && verification.verified && !verification.pass) {
-          retryCount = 1;
+        const maxRetries =
+          sourceImage && verification.verified
+            ? (imageQuality === "quality" ? 2 : 1)
+            : 0;
 
+        while (
+          retryCount < maxRetries &&
+          best.verification?.verified &&
+          !best.verification?.pass
+        ) {
+          retryCount += 1;
+
+          const v = best.verification;
           const retryPrompt = [
             promptForModel,
-            "CORRECTION AFTER VALIDATION:",
-            verification.retryInstruction ||
-              "Preserve the original identity and composition more strictly. Remove all unintended changes.",
-            verification.issues?.length
-              ? "ISSUES TO FIX: " + verification.issues.join("; ")
+            "CORRECTION PASS " + retryCount + ":",
+            v.retryInstruction ||
+              "Preserve the original reference more strictly and fix only the requested target.",
+            v.issues?.length
+              ? "ISSUES TO FIX: " + v.issues.join("; ")
               : "",
-            verification.unwantedChanges?.length
+            v.unwantedChanges?.length
               ? "REMOVE UNWANTED CHANGES: " +
-                verification.unwantedChanges.join("; ")
+                v.unwantedChanges.join("; ")
               : "",
-            "Use image 0 as the authoritative source. Do not reinterpret the scene.",
+            Number.isFinite(v.identity)
+              ? "IDENTITY SCORE WAS " +
+                Math.round(v.identity * 100) +
+                "%. Improve identity preservation."
+              : "",
+            Number.isFinite(v.composition)
+              ? "COMPOSITION SCORE WAS " +
+                Math.round(v.composition * 100) +
+                "%. Restore original framing/geometry."
+              : "",
+            Number.isFinite(v.requestFulfillment)
+              ? "REQUEST FULFILLMENT WAS " +
+                Math.round(v.requestFulfillment * 100) +
+                "%. Complete the requested change precisely."
+              : "",
+            taskPlan.requiresTextAccuracy &&
+            Number.isFinite(v.textAccuracy)
+              ? "TEXT ACCURACY WAS " +
+                Math.round(v.textAccuracy * 100) +
+                "%. Preserve/copy required text exactly."
+              : "",
+            "Use image 0 as the sole authoritative visual source. Do not reinterpret unrelated regions.",
           ].filter(Boolean).join(" ");
 
           const retried = await runCloudflareImage({
@@ -2300,29 +3002,53 @@ async function handleImage(request, env) {
             modelOverride: adaptiveModelForAttempt,
             prompt: retryPrompt,
             sourceImage,
+            width: outputSize.width,
+            height: outputSize.height,
+            editStrength: Math.max(
+              0.05,
+              Number(taskPlan.editStrength || 0.22) -
+                retryCount * 0.04
+            ),
             env,
           });
 
           const retryVerification = await verifyVisualEdit({
+            originalBlob: sourceImage,
             originalDescription: sourceDescription,
-            resultBlob: new Blob([retried.bytes], { type: "image/jpeg" }),
+            resultBlob: new Blob(
+              [retried.bytes],
+              { type: "image/jpeg" }
+            ),
             prompt,
             spec: editSpec,
-            sessionId: sessionId ? sessionId + "-retry" : "",
+            taskPlan,
+            visualContext,
+            sessionId:
+              sessionId
+                ? sessionId + "-retry-" + retryCount
+                : "",
             env,
           });
 
+          const retryCandidateScore =
+            visualCandidateScore(
+              retryVerification,
+              taskPlan
+            );
+
           if (
-            retryVerification.score == null ||
-            verification.score == null ||
-            Number(retryVerification.score) >= Number(verification.score)
+            retryCandidateScore >
+            best.candidateScore
           ) {
             best = {
               generated: retried,
               verification: retryVerification,
               retryCount,
+              candidateScore: retryCandidateScore,
             };
           }
+
+          if (best.verification?.pass) break;
         }
 
         if (
@@ -2331,38 +3057,83 @@ async function handleImage(request, env) {
           imageQuality === "quality" &&
           best.verification?.verified &&
           !best.verification?.pass &&
-          Number(best.verification?.score || 0) < 0.55
+          best.candidateScore < 0.6
         ) {
           continue;
         }
 
+        const finalMode =
+          sourceImage
+            ? taskPlan.mode
+            : taskPlan.mode === "poster"
+              ? "poster"
+              : "create";
+
         if (sessionId) {
           await Promise.all([
             appendServerEvent(env, sessionId, {
-              type: sourceImage ? "image-edit" : "image-generation",
+              type:
+                sourceImage
+                  ? "image-edit"
+                  : "image-generation",
               role: "assistant",
               content: prompt,
               meta: {
                 model: best.generated.model,
                 quality: imageQuality,
-                verified: Boolean(best.verification?.verified),
-                score: best.verification?.score,
-                retryCount: best.retryCount,
-                adaptiveRouter: imageRoute.adaptiveDecision || null,
+                imageTask: finalMode,
+                preservationLevel:
+                  taskPlan.preservationLevel,
+                verified:
+                  Boolean(
+                    best.verification?.verified
+                  ),
+                score:
+                  best.verification?.score,
+                identity:
+                  best.verification?.identity,
+                requestFulfillment:
+                  best.verification?.requestFulfillment,
+                retryCount:
+                  best.retryCount,
+                outputSize,
+                adaptiveRouter:
+                  imageRoute.adaptiveDecision || null,
               },
             }),
             recordServerMetric(env, sessionId, {
-              type: sourceImage ? "image-edit" : "image-generation",
-              route: sourceImage ? "visual-edit" : "visual-generate",
+              type:
+                sourceImage
+                  ? "image-edit"
+                  : "image-generation",
+              route:
+                sourceImage
+                  ? "visual-" + finalMode
+                  : "visual-" + finalMode,
               provider: "cloudflare",
               model: best.generated.model,
-              latencyMs: Date.now() - startedAt,
+              latencyMs:
+                Date.now() - startedAt,
               ok: true,
               meta: {
-                verified: Boolean(best.verification?.verified),
-                score: best.verification?.score,
-                retryCount: best.retryCount,
-                adaptiveRouter: imageRoute.adaptiveDecision || null,
+                imageTask: finalMode,
+                preservationLevel:
+                  taskPlan.preservationLevel,
+                verified:
+                  Boolean(
+                    best.verification?.verified
+                  ),
+                score:
+                  best.verification?.score,
+                identity:
+                  best.verification?.identity,
+                requestFulfillment:
+                  best.verification?.requestFulfillment,
+                retryCount:
+                  best.retryCount,
+                outputSize,
+                adaptiveRouter:
+                  imageRoute.adaptiveDecision || null,
               },
             }),
           ]);
@@ -2373,93 +3144,181 @@ async function handleImage(request, env) {
           provider: "cloudflare",
           model: best.generated.model,
           ok: true,
-          score: best.verification?.score,
+          score:
+            best.verification?.score,
           retries: best.retryCount,
-          latencyMs: Date.now() - startedAt,
+          latencyMs:
+            Date.now() - startedAt,
         });
 
         if (
           sourceImage &&
           best.verification?.verified &&
-          Number(best.verification?.score || 1) < 0.72
+          !best.verification?.pass
         ) {
           const guidance = [
             best.verification?.retryInstruction || "",
-            Array.isArray(best.verification?.issues)
+            best.verification?.issues?.length
               ? best.verification.issues.join("; ")
               : "",
-            Array.isArray(best.verification?.unwantedChanges)
+            best.verification?.unwantedChanges?.length
               ? "Evitar mudanças indesejadas: " +
                 best.verification.unwantedChanges.join("; ")
               : "",
-          ].filter(Boolean).join(" ").slice(0, 3500);
+          ].filter(Boolean).join(" ").slice(0, 3600);
 
           if (guidance) {
             await addGlobalLearningLesson(env, {
               taskType: "image",
               trigger:
-                "uma edição com imagem de referência exigir preservação forte",
+                "tarefa visual " +
+                finalMode +
+                " com preservação " +
+                taskPlan.preservationLevel,
               guidance:
-                "Preserve tudo que não foi explicitamente pedido e corrija estes padrões de falha observados: " +
+                "Em tarefas semelhantes, preservar tudo fora do alvo e corrigir estes padrões observados: " +
                 guidance,
               confidence: Math.max(
-                0.58,
-                Math.min(0.92, 1 - Number(best.verification.score || 0.5))
+                0.62,
+                Math.min(
+                  0.94,
+                  1 -
+                    Number(
+                      best.verification.score || 0.5
+                    ) *
+                      0.45
+                )
               ),
-              source: "visual-verifier",
+              source: "visual-verifier-v2",
               signal: "negative",
             });
           }
         }
 
-        return new Response(best.generated.bytes, {
-          headers: {
-            "Content-Type": "image/jpeg",
-            "Cache-Control": "no-store",
-            "X-Nexus-Image-Mode": sourceImage ? "edit" : "new",
-            "X-Nexus-Provider": "cloudflare",
-            "X-Nexus-Model": best.generated.model,
-            "X-Nexus-Quality-Fallback":
-              quality === "quality" && imageQuality === "fast" ? "1" : "0",
-            "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-            "X-Nexus-Prompt-Model": expansion.model || "",
-            "X-Nexus-Visual-Verified": best.verification?.verified ? "1" : "0",
-            "X-Nexus-Visual-Score":
-              best.verification?.score == null
-                ? ""
-                : String(best.verification.score),
-            "X-Nexus-Visual-Retry": String(best.retryCount || 0),
-            "X-Nexus-Adaptive-Router":
-              imageRoute.adaptiveDecision?.adaptive ? "1" : "0",
-            "X-Nexus-Adaptive-Score":
-              imageRoute.adaptiveDecision?.selected?.score == null
-                ? ""
-                : String(imageRoute.adaptiveDecision.selected.score),
-            "X-Nexus-Adaptive-Confidence":
-              imageRoute.adaptiveDecision?.selected?.confidence == null
-                ? ""
-                : String(imageRoute.adaptiveDecision.selected.confidence),
-          },
-        });
+        return new Response(
+          best.generated.bytes,
+          {
+            headers: {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "no-store",
+              "X-Nexus-Image-Mode": finalMode,
+              "X-Nexus-Image-Task": finalMode,
+              "X-Nexus-Preservation":
+                taskPlan.preservationLevel,
+              "X-Nexus-Provider": "cloudflare",
+              "X-Nexus-Model":
+                best.generated.model,
+              "X-Nexus-Image-Width":
+                String(outputSize.width),
+              "X-Nexus-Image-Height":
+                String(outputSize.height),
+              "X-Nexus-Quality-Fallback":
+                quality === "quality" &&
+                imageQuality === "fast"
+                  ? "1"
+                  : "0",
+              "X-Nexus-Prompt-Expanded":
+                expansion.expanded ? "1" : "0",
+              "X-Nexus-Prompt-Model":
+                expansion.model || "",
+              "X-Nexus-Visual-Verified":
+                best.verification?.verified
+                  ? "1"
+                  : "0",
+              "X-Nexus-Visual-Score":
+                best.verification?.score == null
+                  ? ""
+                  : String(
+                      best.verification.score
+                    ),
+              "X-Nexus-Identity-Score":
+                best.verification?.identity == null
+                  ? ""
+                  : String(
+                      best.verification.identity
+                    ),
+              "X-Nexus-Fulfillment-Score":
+                best.verification
+                  ?.requestFulfillment == null
+                  ? ""
+                  : String(
+                      best.verification
+                        .requestFulfillment
+                    ),
+              "X-Nexus-Artifact-Score":
+                best.verification?.artifactFree ==
+                null
+                  ? ""
+                  : String(
+                      best.verification
+                        .artifactFree
+                    ),
+              "X-Nexus-Text-Score":
+                best.verification?.textAccuracy ==
+                null
+                  ? ""
+                  : String(
+                      best.verification
+                        .textAccuracy
+                    ),
+              "X-Nexus-Visual-Retry":
+                String(best.retryCount || 0),
+              "X-Nexus-Adaptive-Router":
+                imageRoute.adaptiveDecision
+                  ?.adaptive
+                  ? "1"
+                  : "0",
+              "X-Nexus-Adaptive-Score":
+                imageRoute.adaptiveDecision
+                  ?.selected?.score == null
+                  ? ""
+                  : String(
+                      imageRoute.adaptiveDecision
+                        .selected.score
+                    ),
+              "X-Nexus-Adaptive-Confidence":
+                imageRoute.adaptiveDecision
+                  ?.selected?.confidence == null
+                  ? ""
+                  : String(
+                      imageRoute.adaptiveDecision
+                        .selected.confidence
+                    ),
+            },
+          }
+        );
       } catch (error) {
-        cloudflareImageError = error?.message || String(error);
-        const failure = classifyAdaptiveFailure(error);
+        cloudflareImageError =
+          error?.message || String(error);
+        const failure =
+          classifyAdaptiveFailure(error);
         const failedModel =
           imageQuality === quality
             ? imageRoute.model
             : (
                 imageQuality === "quality"
-                  ? (env.CF_IMAGE_QUALITY_MODEL || CF_IMAGE_QUALITY_MODEL)
-                  : (env.CF_IMAGE_FAST_MODEL || CF_IMAGE_FAST_MODEL)
+                  ? (
+                      env.CF_IMAGE_QUALITY_MODEL ||
+                      CF_IMAGE_QUALITY_MODEL
+                    )
+                  : (
+                      env.CF_IMAGE_FAST_MODEL ||
+                      CF_IMAGE_FAST_MODEL
+                    )
               );
-        await recordGlobalLearningOutcome(env, {
-          kind: "image",
-          provider: "cloudflare",
-          model: failedModel,
-          ok: false,
-          failureKind: failure.kind,
-          latencyMs: Date.now() - startedAt,
-        });
+
+        await recordGlobalLearningOutcome(
+          env,
+          {
+            kind: "image",
+            provider: "cloudflare",
+            model: failedModel,
+            ok: false,
+            failureKind: failure.kind,
+            latencyMs:
+              Date.now() - startedAt,
+          }
+        );
       }
     }
   }
@@ -2471,89 +3330,220 @@ async function handleImage(request, env) {
           ? "A edição com preservação de referência falhou no Cloudflare e não há fallback de edição disponível."
           : "Não consegui gerar a imagem pelo Cloudflare e não há fallback configurado.",
         provider_error:
-          cloudflareImageError || "Falha desconhecida do Workers AI.",
+          cloudflareImageError ||
+          "Falha desconhecida do Workers AI.",
       },
       502
     );
   }
 
-  const client = new InferenceClient(env.HF_TOKEN);
+  const client =
+    new InferenceClient(env.HF_TOKEN);
   const imageModel =
-    env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
+    env.HF_IMAGE_MODEL ||
+    "black-forest-labs/FLUX.1-schnell";
   const editModel =
-    env.HF_IMAGE_EDIT_MODEL || "black-forest-labs/FLUX.1-Kontext-dev";
+    env.HF_IMAGE_EDIT_MODEL ||
+    "black-forest-labs/FLUX.1-Kontext-dev";
 
   try {
     let image;
-    let mode = "new";
+    let mode =
+      taskPlan.mode === "poster"
+        ? "poster"
+        : "create";
     let model = imageModel;
 
     if (sourceImage) {
       image = await client.imageToImage({
         model: editModel,
         inputs: sourceImage,
-        parameters: { prompt: promptForModel },
+        parameters: {
+          prompt: promptForModel,
+        },
       });
-      mode = "edit";
+      mode = taskPlan.mode;
       model = editModel;
     } else {
       image = await client.textToImage({
         model: imageModel,
-        inputs: expansion.prompt,
+        inputs: promptForModel,
       });
+    }
+
+    let fallbackVerification = {
+      verified: false,
+      pass: true,
+      score: null,
+      identity: null,
+      requestFulfillment: null,
+      artifactFree: null,
+      textAccuracy: null,
+    };
+
+    if (
+      sourceImage &&
+      env.AI &&
+      image &&
+      typeof image.arrayBuffer === "function"
+    ) {
+      fallbackVerification =
+        await verifyVisualEdit({
+          originalBlob: sourceImage,
+          originalDescription:
+            sourceDescription,
+          resultBlob: image,
+          prompt,
+          spec: editSpec,
+          taskPlan,
+          visualContext,
+          sessionId:
+            sessionId
+              ? sessionId + "-hf-fallback"
+              : "",
+          env,
+        });
     }
 
     if (sessionId) {
-      await recordServerMetric(env, sessionId, {
-        type: sourceImage ? "image-edit" : "image-generation",
-        route: sourceImage ? "visual-edit" : "visual-generate",
-        provider: "huggingface",
-        model,
-        latencyMs: Date.now() - startedAt,
-        ok: true,
-      });
+      await recordServerMetric(
+        env,
+        sessionId,
+        {
+          type:
+            sourceImage
+              ? "image-edit"
+              : "image-generation",
+          route:
+            sourceImage
+              ? "visual-" + mode
+              : "visual-" + mode,
+          provider: "huggingface",
+          model,
+          latencyMs:
+            Date.now() - startedAt,
+          ok: true,
+          meta: {
+            imageTask: mode,
+            preservationLevel:
+              taskPlan.preservationLevel,
+            verified:
+              Boolean(
+                fallbackVerification.verified
+              ),
+            score:
+              fallbackVerification.score,
+          },
+        }
+      );
     }
 
-    await recordGlobalLearningOutcome(env, {
-      kind: "image",
-      provider: "huggingface",
-      model,
-      ok: true,
-      latencyMs: Date.now() - startedAt,
-    });
+    await recordGlobalLearningOutcome(
+      env,
+      {
+        kind: "image",
+        provider: "huggingface",
+        model,
+        ok: true,
+        score:
+          fallbackVerification.score,
+        latencyMs:
+          Date.now() - startedAt,
+      }
+    );
 
     return new Response(image, {
       headers: {
-        "Content-Type": image.type || "image/png",
+        "Content-Type":
+          image.type || "image/png",
         "Cache-Control": "no-store",
         "X-Nexus-Image-Mode": mode,
-        "X-Nexus-Provider": "huggingface",
+        "X-Nexus-Image-Task": mode,
+        "X-Nexus-Preservation":
+          taskPlan.preservationLevel,
+        "X-Nexus-Provider":
+          "huggingface",
         "X-Nexus-Model": model,
-        "X-Nexus-Prompt-Expanded": expansion.expanded ? "1" : "0",
-        "X-Nexus-Prompt-Model": expansion.model || "",
-        "X-Nexus-Visual-Verified": "0",
+        "X-Nexus-Prompt-Expanded":
+          expansion.expanded ? "1" : "0",
+        "X-Nexus-Prompt-Model":
+          expansion.model || "",
+        "X-Nexus-Visual-Verified":
+          fallbackVerification.verified
+            ? "1"
+            : "0",
+        "X-Nexus-Visual-Score":
+          fallbackVerification.score == null
+            ? ""
+            : String(
+                fallbackVerification.score
+              ),
+        "X-Nexus-Identity-Score":
+          fallbackVerification.identity == null
+            ? ""
+            : String(
+                fallbackVerification.identity
+              ),
+        "X-Nexus-Fulfillment-Score":
+          fallbackVerification
+            .requestFulfillment == null
+            ? ""
+            : String(
+                fallbackVerification
+                  .requestFulfillment
+              ),
+        "X-Nexus-Artifact-Score":
+          fallbackVerification.artifactFree ==
+          null
+            ? ""
+            : String(
+                fallbackVerification
+                  .artifactFree
+              ),
+        "X-Nexus-Text-Score":
+          fallbackVerification.textAccuracy ==
+          null
+            ? ""
+            : String(
+                fallbackVerification
+                  .textAccuracy
+              ),
         "X-Nexus-Visual-Retry": "0",
       },
     });
   } catch (error) {
     const info = generationError(error);
-    const failure = classifyAdaptiveFailure(error);
-    await recordGlobalLearningOutcome(env, {
-      kind: "image",
-      provider: "huggingface",
-      model: sourceImage ? editModel : imageModel,
-      ok: false,
-      failureKind: failure.kind,
-      latencyMs: Date.now() - startedAt,
-    });
+    const failure =
+      classifyAdaptiveFailure(error);
+
+    await recordGlobalLearningOutcome(
+      env,
+      {
+        kind: "image",
+        provider: "huggingface",
+        model:
+          sourceImage
+            ? editModel
+            : imageModel,
+        ok: false,
+        failureKind: failure.kind,
+        latencyMs:
+          Date.now() - startedAt,
+      }
+    );
+
     return json(
       {
         error: sourceImage
           ? "Não consegui editar a imagem preservando a referência."
           : "Não consegui gerar a imagem.",
         provider_error: [
-          cloudflareImageError ? "Cloudflare: " + cloudflareImageError : "",
-          "Hugging Face: " + info.message,
+          cloudflareImageError
+            ? "Cloudflare: " +
+              cloudflareImageError
+            : "",
+          "Hugging Face: " +
+            info.message,
         ].filter(Boolean).join(" | "),
         error_kind: info.kind,
       },
