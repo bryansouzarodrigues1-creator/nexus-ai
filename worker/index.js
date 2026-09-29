@@ -957,7 +957,8 @@ async function handleStatus(env) {
         editSpecV2: true,
         directVisualVerifier: true,
         generationVerifier: true,
-        correctiveRetries: 2,
+        correctiveRetriesFast: 1,
+        correctiveRetriesQuality: 3,
         aspectRatioPreservation: true,
         visualLearning: true,
         imageCaseMemory: true,
@@ -973,6 +974,8 @@ async function handleStatus(env) {
         imageQualityGateV2: true,
         referenceLeakageDetection: true,
         failureAwareRetries: true,
+        candidateArena: true,
+        crossQualityCandidateSelection: true,
         maxImageReferences: 4,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
@@ -4513,6 +4516,13 @@ async function handleImage(request, env) {
                   best.verification?.requestFulfillment,
                 retryCount:
                   best.retryCount,
+                retryClass:
+                  best.retryStrategy?.retryClass || "",
+                retryEditStrength:
+                  best.retryStrategy?.editStrength ?? null,
+                candidateArenaUsed,
+                selectedImageQuality:
+                  finalImageQuality,
                 qualityGatePass:
                   best.verification?.qualityGate?.verified
                     ? Boolean(best.verification.qualityGate.pass)
@@ -4623,6 +4633,13 @@ async function handleImage(request, env) {
           referenceLeakageRisk:
             best.verification?.referenceLeakageRisk,
           retries: best.retryCount,
+          retryClass:
+            best.retryStrategy?.retryClass || "",
+          retryEditStrength:
+            best.retryStrategy?.editStrength ?? null,
+          candidateArenaUsed,
+          selectedImageQuality:
+            finalImageQuality,
           rootReferenceUsed: hasRootReference,
           extraReferencesUsed,
           autoApprovedReferencesUsed,
@@ -4766,6 +4783,12 @@ async function handleImage(request, env) {
                 candidateArenaUsed ? "1" : "0",
               "X-Nexus-Selected-Quality":
                 finalImageQuality,
+              "X-Nexus-Retry-Class":
+                best.retryStrategy?.retryClass || "",
+              "X-Nexus-Retry-Edit-Strength":
+                best.retryStrategy?.editStrength == null
+                  ? ""
+                  : String(best.retryStrategy.editStrength),
               "X-Nexus-Visual-Retry":
                 String(best.retryCount || 0),
               "X-Nexus-Adaptive-Router":
