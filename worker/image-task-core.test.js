@@ -16,6 +16,35 @@ assert.deepEqual(
   ["NEXUS"]
 );
 
+
+assert.deepEqual(
+  extractExactRequestedText(
+    "Crie um anúncio. Texto: PROMOÇÃO IMPERDÍVEL, fundo vermelho."
+  ),
+  ["PROMOÇÃO IMPERDÍVEL"]
+);
+
+assert.deepEqual(
+  extractExactRequestedText(
+    "Escreva o título OFERTA DO DIA; use peixe fresco ao fundo."
+  ),
+  ["OFERTA DO DIA"]
+);
+
+assert.deepEqual(
+  extractExactRequestedText(
+    "Coloque SUPER OFERTA!"
+  ),
+  ["SUPER OFERTA"]
+);
+
+assert.deepEqual(
+  extractExactRequestedText(
+    "Crie uma imagem elegante e coloque um peixe no centro"
+  ),
+  []
+);
+
 assert.equal(
   inferNaturalAspectRatio("arte para Story do Instagram"),
   "9:16"
