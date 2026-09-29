@@ -1,8 +1,45 @@
-# NEXUS AI v2.7.2
+# NEXUS AI v2.8.1
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## Image Quality Gate V2 — v2.8.1
+
+A v2.8.1 transforma a validação visual em uma barreira real de qualidade antes de aceitar uma geração.
+
+O pipeline agora combina:
+
+- Visual Verifier para identidade, composição, cumprimento do pedido, artefatos e estilo;
+- verificação determinística de texto exato solicitado;
+- Reference Intelligence para atribuir papéis às referências manuais;
+- Reference Compliance para conferir se apenas os atributos pedidos foram copiados;
+- detecção de attribute leakage, evitando transferência indevida de rosto, identidade, pose, cenário ou estilo;
+- retries corretivos guiados pelos blockers do quality gate;
+- Image Case Memory alimentada com score de referência, leakage e fidelidade de texto.
+
+O gate pode reprovar uma imagem mesmo quando ela parece visualmente boa se houver erro objetivo, como:
+
+- texto solicitado escrito incorretamente;
+- identidade alterada em edição restrita;
+- referência manual aplicada ao atributo errado;
+- vazamento de elementos de uma referência suplementar;
+- cumprimento insuficiente do pedido;
+- artefatos visuais relevantes.
+
+Telemetria exposta pela API inclui:
+
+- `X-Nexus-Quality-Gate`;
+- `X-Nexus-Quality-Gate-Score`;
+- `X-Nexus-Quality-Blockers`;
+- `X-Nexus-Deterministic-Text-Score`;
+- `X-Nexus-Exact-Text-Matches`;
+- `X-Nexus-Exact-Text-Total`;
+- `X-Nexus-Reference-Verified`;
+- `X-Nexus-Reference-Score`;
+- `X-Nexus-Reference-Leakage`.
+
+A interface mostra esses sinais junto à imagem para facilitar testes reais e feedback.
 
 ## Image Fidelity & Multi-Reference V2.7.2
 
