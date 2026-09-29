@@ -1,4 +1,4 @@
-# NEXUS AI v2.5
+# NEXUS AI v2.6
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
@@ -33,6 +33,120 @@ Cloudflare Worker
           ↓
         resposta
 ```
+
+## Image Intelligence V2.6
+
+A V2.6 transforma a geração/edição de imagem em um pipeline de decisão e validação, em vez de enviar o prompt cru diretamente ao modelo.
+
+### Image Task Router
+
+Antes da geração, a NEXUS classifica a intenção em um dos modos:
+
+- `create`
+- `strict_edit`
+- `enhance`
+- `remove_replace`
+- `poster`
+- `identity_lock`
+- `background`
+
+O plano também define:
+- nível de preservação;
+- força da edição;
+- se a mudança deve ser localizada;
+- necessidade de bloqueio de identidade;
+- necessidade de fidelidade de texto;
+- critérios de sucesso;
+- riscos prováveis;
+- proporção da saída.
+
+### Visual Context V2
+
+Quando existe referência, a NEXUS extrai contexto visual estruturado antes de editar:
+
+- sujeito principal;
+- quantidade de sujeitos;
+- presença de rosto;
+- traços visuais úteis para preservar aparência;
+- roupa;
+- pose;
+- enquadramento;
+- fundo;
+- iluminação;
+- estilo;
+- cores;
+- texto existente;
+- elementos protegidos/editáveis;
+- âncoras espaciais;
+- áreas de risco.
+
+O contexto é descritivo e não tenta identificar pessoas reais.
+
+### EditSpec V2
+
+O Edit Planner recebe o Task Plan + Visual Context + lições do Learning Loop e gera:
+
+```text
+operationType
+targetChange[]
+preserve[]
+forbiddenChanges[]
+identityAnchor
+compositionAnchor
+styleAnchor
+editStrength
+localized
+successCriteria[]
+failureRisks[]
+textRequirements[]
+```
+
+### Visual Verifier V2
+
+O verificador tenta comparar diretamente a imagem original e o resultado usando o modelo de visão. Se a comparação multimodal não estiver disponível, usa descrições visuais como fallback.
+
+Scores avaliados:
+- qualidade global;
+- identidade;
+- composição;
+- preservação de fundo;
+- preservação de estilo;
+- cumprimento do pedido;
+- ausência de artefatos;
+- fidelidade de texto;
+- realismo.
+
+Os limiares ficam mais rígidos quando o Task Router marca preservação `high` ou `maximum`.
+
+### Retry corretivo orientado por falha
+
+No modo Qualidade, uma edição reprovada pode receber até duas novas tentativas. Cada retry recebe os problemas concretos detectados pelo verifier.
+
+A NEXUS não escolhe automaticamente o último resultado: cada candidato recebe score ponderado e a melhor tentativa vence.
+
+### Proporção e resolução
+
+A referência enviada ao FLUX.2 continua abaixo de 512×512 por exigência do provider.
+
+A saída, porém, preserva a proporção original da imagem:
+- modo rápido: lado maior em torno de 1024 px;
+- modo qualidade: lado maior em torno de 1536 px.
+
+Para criação sem referência, o Task Router escolhe entre proporções comuns como 1:1, 16:9, 9:16 e 4:5.
+
+### Aprendizado visual
+
+Falhas finais do Visual Verifier podem virar lições reutilizáveis no Learning Loop, incluindo o tipo da tarefa e o nível de preservação.
+
+A UI exibe quando disponível:
+- tipo de tarefa visual;
+- nível de preservação;
+- score visual;
+- score de identidade;
+- cumprimento do pedido;
+- ausência de artefatos;
+- quantidade de retries;
+- resolução da saída.
 
 ## Estado server-side
 
