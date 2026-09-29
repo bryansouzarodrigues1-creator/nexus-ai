@@ -274,6 +274,194 @@ export class ConversationState extends DurableObject {
     return tasks[cleanText(id, 100)] || null;
   }
 
+  async putTaskPayload(id, payloadText = "") {
+    const taskId = cleanText(id, 100);
+    if (!taskId) throw new Error("Task id obrigatório.");
+
+    const raw = String(payloadText || "");
+    const chunkSize = 1200000;
+    const chunks = [];
+
+    for (let offset = 0; offset < raw.length; offset += chunkSize) {
+      chunks.push(raw.slice(offset, offset + chunkSize));
+    }
+
+    const previous = await this.ctx.storage.get(
+      "taskPayloadMeta:" + taskId
+    );
+    const previousCount = Math.max(0, Number(previous?.chunks || 0));
+    const puts = {};
+
+    chunks.forEach((chunk, index) => {
+      puts["taskPayload:" + taskId + ":" + index] = chunk;
+    });
+    puts["taskPayloadMeta:" + taskId] = {
+      chunks: chunks.length,
+      length: raw.length,
+      updatedAt: Date.now(),
+    };
+
+    if (Object.keys(puts).length) {
+      await this.ctx.storage.put(puts);
+    }
+
+    if (previousCount > chunks.length) {
+      const stale = [];
+      for (let i = chunks.length; i < previousCount; i++) {
+        stale.push("taskPayload:" + taskId + ":" + i);
+      }
+      if (stale.length) await this.ctx.storage.delete(stale);
+    }
+
+    return {
+      ok: true,
+      chunks: chunks.length,
+      length: raw.length,
+    };
+  }
+
+  async getTaskPayload(id) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) return "";
+
+    const meta = await this.ctx.storage.get(
+      "taskPayloadMeta:" + taskId
+    );
+    const count = Math.max(0, Number(meta?.chunks || 0));
+    if (!count) return "";
+
+    const keys = Array.from(
+      { length: count },
+      (_, index) => "taskPayload:" + taskId + ":" + index
+    );
+    const values = await this.ctx.storage.get(keys);
+
+    return keys
+      .map((key) => String(values.get(key) || ""))
+      .join("");
+  }
+
+  async deleteTaskPayload(id) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) return { ok: false };
+
+    const meta = await this.ctx.storage.get(
+      "taskPayloadMeta:" + taskId
+    );
+    const count = Math.max(0, Number(meta?.chunks || 0));
+    const keys = ["taskPayloadMeta:" + taskId];
+
+    for (let i = 0; i < count; i++) {
+      keys.push("taskPayload:" + taskId + ":" + i);
+    }
+
+    await this.ctx.storage.delete(keys);
+    return { ok: true };
+  }
+
+  async putTaskArtifact(id, meta = {}, bytes = new Uint8Array()) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) throw new Error("Task id obrigatório.");
+
+    const data =
+      bytes instanceof Uint8Array
+        ? bytes
+        : new Uint8Array(bytes || []);
+    const chunkSize = 1500000;
+    const count = Math.ceil(data.byteLength / chunkSize);
+    const previous = await this.ctx.storage.get(
+      "taskArtifactMeta:" + taskId
+    );
+    const previousCount = Math.max(0, Number(previous?.chunks || 0));
+    const puts = {};
+
+    for (let i = 0; i < count; i++) {
+      const start = i * chunkSize;
+      puts["taskArtifact:" + taskId + ":" + i] =
+        data.slice(start, Math.min(data.byteLength, start + chunkSize));
+    }
+
+    puts["taskArtifactMeta:" + taskId] = {
+      ...(meta && typeof meta === "object" ? meta : {}),
+      chunks: count,
+      size: data.byteLength,
+      updatedAt: Date.now(),
+    };
+
+    await this.ctx.storage.put(puts);
+
+    if (previousCount > count) {
+      const stale = [];
+      for (let i = count; i < previousCount; i++) {
+        stale.push("taskArtifact:" + taskId + ":" + i);
+      }
+      if (stale.length) await this.ctx.storage.delete(stale);
+    }
+
+    return puts["taskArtifactMeta:" + taskId];
+  }
+
+  async getTaskArtifactMeta(id) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) return null;
+    return (
+      (await this.ctx.storage.get(
+        "taskArtifactMeta:" + taskId
+      )) || null
+    );
+  }
+
+  async getTaskArtifact(id) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) return null;
+
+    const meta = await this.getTaskArtifactMeta(taskId);
+    const count = Math.max(0, Number(meta?.chunks || 0));
+    if (!meta || !count) return null;
+
+    const keys = Array.from(
+      { length: count },
+      (_, index) => "taskArtifact:" + taskId + ":" + index
+    );
+    const values = await this.ctx.storage.get(keys);
+    const chunks = keys
+      .map((key) => values.get(key))
+      .filter((value) => value instanceof Uint8Array);
+
+    const total = chunks.reduce(
+      (sum, chunk) => sum + chunk.byteLength,
+      0
+    );
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    return {
+      meta,
+      bytes,
+    };
+  }
+
+  async deleteTaskArtifact(id) {
+    const taskId = cleanText(id, 100);
+    if (!taskId) return { ok: false };
+
+    const meta = await this.getTaskArtifactMeta(taskId);
+    const count = Math.max(0, Number(meta?.chunks || 0));
+    const keys = ["taskArtifactMeta:" + taskId];
+
+    for (let i = 0; i < count; i++) {
+      keys.push("taskArtifact:" + taskId + ":" + i);
+    }
+
+    await this.ctx.storage.delete(keys);
+    return { ok: true };
+  }
+
   async recordMetric(metric = {}) {
     const metrics = (await this.ctx.storage.get("metrics")) || [];
     const next = [
