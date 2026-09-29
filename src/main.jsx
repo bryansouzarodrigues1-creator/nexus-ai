@@ -1251,6 +1251,9 @@ function App(){
               <div><Image size={17}/><strong>{learningStatus?.summary?.imageCases??'—'}</strong><span>casos visuais</span></div>
               <div><LockKeyhole size={17}/><strong>{learningStatus?.summary?.rootReferenceCases??'—'}</strong><span>âncoras raiz</span></div>
               <div><Image size={17}/><strong>{learningStatus?.summary?.supplementaryReferenceCases??'—'}</strong><span>multi-ref</span></div>
+              <div><Activity size={17}/><strong>{learningStatus?.summary?.candidateArenaCases??'—'}</strong><span>arena visual</span></div>
+              <div><Sparkles size={17}/><strong>{learningStatus?.summary?.qualitySelectedCases??'—'}</strong><span>quality venceu</span></div>
+              <div><FileText size={17}/><strong>{learningStatus?.summary?.exactTextPerfectCases??'—'}/{learningStatus?.summary?.exactTextCases??'—'}</strong><span>texto exato</span></div>
             </div>
 
             <div className="learning-section">
