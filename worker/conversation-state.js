@@ -536,36 +536,77 @@ export class ConversationState extends DurableObject {
         mode: requestedMode,
         query: queryText,
         targets: targetList,
-        limit: 20,
+        limit: 40,
       }
     );
 
-    const relevant = ranked.map(({ item, relevance }) => ({
-      mode: item.mode,
-      preservationLevel: item.preservationLevel,
-      intentSummary: item.intentSummary,
-      provider: item.provider,
-      model: item.model,
-      verified: Boolean(item.verified),
-      pass: Boolean(item.pass),
-      score: item.score,
-      identity: item.identity,
-      requestFulfillment: item.requestFulfillment,
-      artifactFree: item.artifactFree,
-      textAccuracy: item.textAccuracy,
-      retries: Number(item.retries || 0),
-      targets: Array.isArray(item.targets) ? item.targets : [],
-      riskFlags: Array.isArray(item.riskFlags) ? item.riskFlags : [],
-      successCriteria: Array.isArray(item.successCriteria)
-        ? item.successCriteria
-        : [],
-      issues: Array.isArray(item.issues) ? item.issues : [],
-      unwantedChanges: Array.isArray(item.unwantedChanges)
-        ? item.unwantedChanges
-        : [],
-      relevance: Number(relevance || 0),
-      at: Number(item.at || 0),
-    }));
+    // Keep strong exemplars AND semantically close failures. The failures are
+    // especially valuable because they tell the planner what not to repeat.
+    const successful = ranked
+      .filter((entry) => entry.item?.pass !== false)
+      .slice(0, 12);
+    const warnings = ranked
+      .filter(
+        (entry) =>
+          entry.item?.pass === false &&
+          Number(entry.semanticSimilarity || 0) > 0
+      )
+      .sort(
+        (a, b) =>
+          Number(b.semanticSimilarity || 0) -
+            Number(a.semanticSimilarity || 0) ||
+          Number(b.relevance || 0) -
+            Number(a.relevance || 0)
+      )
+      .slice(0, 6);
+
+    const selected = [...successful];
+    for (const warning of warnings) {
+      if (!selected.some((entry) => entry.item?.id === warning.item?.id)) {
+        selected.push(warning);
+      }
+    }
+
+    const relevant = selected
+      .sort(
+        (a, b) =>
+          Number(b.relevance || 0) -
+            Number(a.relevance || 0)
+      )
+      .slice(0, 18)
+      .map(({
+        item,
+        relevance,
+        semanticSimilarity,
+        quality,
+      }) => ({
+        mode: item.mode,
+        preservationLevel: item.preservationLevel,
+        intentSummary: item.intentSummary,
+        provider: item.provider,
+        model: item.model,
+        verified: Boolean(item.verified),
+        pass: Boolean(item.pass),
+        score: item.score,
+        identity: item.identity,
+        requestFulfillment: item.requestFulfillment,
+        artifactFree: item.artifactFree,
+        textAccuracy: item.textAccuracy,
+        retries: Number(item.retries || 0),
+        targets: Array.isArray(item.targets) ? item.targets : [],
+        riskFlags: Array.isArray(item.riskFlags) ? item.riskFlags : [],
+        successCriteria: Array.isArray(item.successCriteria)
+          ? item.successCriteria
+          : [],
+        issues: Array.isArray(item.issues) ? item.issues : [],
+        unwantedChanges: Array.isArray(item.unwantedChanges)
+          ? item.unwantedChanges
+          : [],
+        relevance: Number(relevance || 0),
+        semanticSimilarity: Number(semanticSimilarity || 0),
+        quality: Number(quality || 0),
+        at: Number(item.at || 0),
+      }));
 
     return {
       mode: requestedMode,
