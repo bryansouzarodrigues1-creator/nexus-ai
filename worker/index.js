@@ -14,6 +14,7 @@ import {
 import {
   scoreExactTextRequirements,
   fuseReferenceCompliance,
+  applyImageQualityGate,
 } from "./image-quality-gate.js";
 import {
   extractExactRequestedText,
@@ -24,7 +25,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.8.0";
+const VERSION = "2.8.1";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -2557,7 +2558,7 @@ function visualCandidateScore(verification, taskPlan) {
   const preservationHeavy =
     ["maximum", "high"].includes(taskPlan?.preservationLevel);
 
-  return preservationHeavy
+  const baseScore = preservationHeavy
     ? (
         score * 0.18 +
         request * 0.22 +
@@ -2582,6 +2583,26 @@ function visualCandidateScore(verification, taskPlan) {
         referenceScore * 0.02 -
         Math.max(0, Math.min(1, referenceLeakageRisk)) * 0.02
       );
+
+  const gate = verification?.qualityGate;
+  if (!gate?.verified) {
+    return Math.max(0, Math.min(1, baseScore));
+  }
+
+  const gateScore = Number.isFinite(Number(gate.score))
+    ? Number(gate.score)
+    : baseScore;
+  const blockerCount = Array.isArray(gate.blockers)
+    ? gate.blockers.length
+    : 0;
+
+  const fused =
+    baseScore * 0.62 +
+    gateScore * 0.38 +
+    (gate.pass ? 0.1 : 0) -
+    Math.min(0.12, blockerCount * 0.018);
+
+  return Math.max(0, Math.min(1, fused));
 }
 
 async function verifyVisualEdit({
@@ -4145,6 +4166,11 @@ async function handleImage(request, env) {
             );
         }
 
+        verification = applyImageQualityGate(
+          verification,
+          taskPlan
+        );
+
         let best = {
           generated,
           verification,
@@ -4160,7 +4186,7 @@ async function handleImage(request, env) {
 
         const maxRetries =
           verification?.verified
-            ? (imageQuality === "quality" ? 2 : 1)
+            ? (imageQuality === "quality" ? 3 : 1)
             : 0;
 
         while (
@@ -4296,6 +4322,11 @@ async function handleImage(request, env) {
               );
           }
 
+          retryVerification = applyImageQualityGate(
+            retryVerification,
+            taskPlan
+          );
+
           const retryCandidateScore =
             visualCandidateScore(
               retryVerification,
@@ -4369,6 +4400,14 @@ async function handleImage(request, env) {
                   best.verification?.referenceLeakageRisk,
                 retryCount:
                   best.retryCount,
+                qualityGatePass:
+                  best.verification?.qualityGate?.verified
+                    ? Boolean(best.verification.qualityGate.pass)
+                    : null,
+                qualityGateScore:
+                  best.verification?.qualityGateScore ?? null,
+                qualityGateBlockers:
+                  best.verification?.qualityGateBlockers || [],
                 outputSize,
                 adaptiveRouter:
                   imageRoute.adaptiveDecision || null,
@@ -4406,6 +4445,14 @@ async function handleImage(request, env) {
                   best.verification?.requestFulfillment,
                 retryCount:
                   best.retryCount,
+                qualityGatePass:
+                  best.verification?.qualityGate?.verified
+                    ? Boolean(best.verification.qualityGate.pass)
+                    : null,
+                qualityGateScore:
+                  best.verification?.qualityGateScore ?? null,
+                qualityGateBlockers:
+                  best.verification?.qualityGateBlockers || [],
                 outputSize,
                 adaptiveRouter:
                   imageRoute.adaptiveDecision || null,
@@ -4627,6 +4674,18 @@ async function handleImage(request, env) {
                       best.verification
                         .referenceLeakageRisk
                     ),
+              "X-Nexus-Quality-Gate":
+                best.verification?.qualityGate?.verified
+                  ? (best.verification.qualityGate.pass ? "pass" : "fail")
+                  : "unverified",
+              "X-Nexus-Quality-Gate-Score":
+                best.verification?.qualityGateScore == null
+                  ? ""
+                  : String(best.verification.qualityGateScore),
+              "X-Nexus-Quality-Blockers":
+                Array.isArray(best.verification?.qualityGateBlockers)
+                  ? best.verification.qualityGateBlockers.join(",").slice(0, 300)
+                  : "",
               "X-Nexus-Visual-Retry":
                 String(best.retryCount || 0),
               "X-Nexus-Adaptive-Router":
@@ -4811,6 +4870,11 @@ async function handleImage(request, env) {
           );
       }
     }
+
+    fallbackVerification = applyImageQualityGate(
+      fallbackVerification,
+      taskPlan
+    );
 
     if (sessionId) {
       await recordServerMetric(
@@ -4999,6 +5063,18 @@ async function handleImage(request, env) {
                 fallbackVerification
                   .referenceLeakageRisk
               ),
+        "X-Nexus-Quality-Gate":
+          fallbackVerification?.qualityGate?.verified
+            ? (fallbackVerification.qualityGate.pass ? "pass" : "fail")
+            : "unverified",
+        "X-Nexus-Quality-Gate-Score":
+          fallbackVerification?.qualityGateScore == null
+            ? ""
+            : String(fallbackVerification.qualityGateScore),
+        "X-Nexus-Quality-Blockers":
+          Array.isArray(fallbackVerification?.qualityGateBlockers)
+            ? fallbackVerification.qualityGateBlockers.join(",").slice(0, 300)
+            : "",
         "X-Nexus-Visual-Retry": "0",
       },
     });
