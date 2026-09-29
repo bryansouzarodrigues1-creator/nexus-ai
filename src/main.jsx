@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
-import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory} from './image-context.js';
+import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory,selectApprovedChainReferenceKeys} from './image-context.js';
 
 const starterActions=[
   {icon:Globe2,label:'Pesquisar na web',mode:'search'},
@@ -763,13 +763,57 @@ function App(){
           ?await shrinkImageDataUrl(sourceImageRaw,500)
           :null;
 
-        const extraReferenceImages=(
+        const maxSupplementarySlots=sourceImage
+          ?Math.max(0,3-(rootReferenceImage?1:0))
+          :0;
+
+        const manualReferenceImages=(
           await Promise.all(
             (activeExtraImageRefs||[])
-              .slice(0,3)
+              .slice(0,maxSupplementarySlots)
               .map(ref=>shrinkImageDataUrl(ref.dataUrl,500))
           )
         ).filter(Boolean);
+
+        const remainingApprovedSlots=Math.max(
+          0,
+          maxSupplementarySlots-manualReferenceImages.length
+        );
+
+        const approvedReferenceKeys=(
+          continuePrevious&&remainingApprovedSlots>0
+        )
+          ?selectApprovedChainReferenceKeys(
+              currentThread?.messages||[],
+              imageChainId,
+              {
+                excludeKeys:[
+                  previousMediaKey,
+                  inheritedRootKey
+                ].filter(Boolean),
+                limit:remainingApprovedSlots
+              }
+            )
+          :[];
+
+        const approvedReferenceImages=(
+          await Promise.all(
+            approvedReferenceKeys.map(async key=>{
+              const raw=await mediaKeyAsDataUrl(key);
+              return raw
+                ?shrinkImageDataUrl(raw,500)
+                :null;
+            })
+          )
+        ).filter(Boolean);
+
+        const extraReferenceImages=[
+          ...manualReferenceImages,
+          ...approvedReferenceImages
+        ].slice(0,maxSupplementarySlots);
+
+        const autoApprovedReferencesUsed=
+          approvedReferenceImages.length;
 
         const priorImagePrompts=(currentThread?.messages||[])
           .filter(m=>m.role==='user'&&m.mode==='image');
@@ -809,6 +853,7 @@ function App(){
             sourceImage,
             rootReferenceImage,
             extraReferenceImages,
+            autoApprovedReferenceCount:autoApprovedReferencesUsed,
             previousPrompt,
             history:imageScopedHistory,
             sessionId:tid,
@@ -843,6 +888,11 @@ function App(){
         const preservationLevel=res.headers.get('x-nexus-preservation')||'';
         const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
         const extraReferencesUsed=Number(res.headers.get('x-nexus-extra-references')||0);
+        const autoApprovedReferencesHeader=res.headers.get('x-nexus-auto-approved-references');
+        const autoApprovedReferencesFinal=
+          autoApprovedReferencesHeader!==null&&autoApprovedReferencesHeader!==''
+            ?Number(autoApprovedReferencesHeader)
+            :autoApprovedReferencesUsed;
         const identityScoreRaw=res.headers.get('x-nexus-identity-score');
         const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
         const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
@@ -903,6 +953,7 @@ function App(){
           visualRootKey:inheritedRootKey||media.key||null,
           rootReferenceUsed,
           extraReferencesUsed,
+          autoApprovedReferencesUsed:autoApprovedReferencesFinal,
           adaptiveRouter,
           imageChainId,
           generationMode:imageMode
