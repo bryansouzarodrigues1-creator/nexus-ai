@@ -1175,159 +1175,108 @@ function App(){
           }
         );
 
-        const res=await fetch('/api/image',{
-          method:'POST',
-          headers:apiHeaders(),
-          body:JSON.stringify({
-            prompt:effectiveText,
-            sourceImage,
-            rootReferenceImage,
-            extraReferenceImages,
-            autoApprovedReferenceCount:autoApprovedReferencesUsed,
-            previousPrompt,
-            history:imageScopedHistory,
-            sessionId:tid,
-            sourceWidth:sourceDimensions?.width||0,
-            sourceHeight:sourceDimensions?.height||0,
-            quality:wantsHighImageQuality(effectiveText)?'quality':'fast'
-          })
-        });
-
-        const type=res.headers.get('content-type')||'';
-        if(!res.ok||type.includes('application/json')){
-          const data=await res.json();
-          throw new Error(
-            [data.error,data.provider_error].filter(Boolean).join(' — ')||
-            'Falha no motor de imagem.'
-          );
-        }
-
-        const blob=await res.blob();
-        const media=await storeGeneratedMedia(blob,'image');
-        const imageMode=res.headers.get('x-nexus-image-mode')||'new';
-        const model=res.headers.get('x-nexus-model')||'';
-        const provider=res.headers.get('x-nexus-provider')||'';
-        const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
-        const promptModel=res.headers.get('x-nexus-prompt-model')||'';
-        const visualVerified=res.headers.get('x-nexus-visual-verified')==='1';
-        const visualScoreRaw=res.headers.get('x-nexus-visual-score');
-        const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
-        const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
-        const imageTask=res.headers.get('x-nexus-image-task')||imageMode;
-        const imageCaseId=res.headers.get('x-nexus-image-case-id')||'';
-        const preservationLevel=res.headers.get('x-nexus-preservation')||'';
-        const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
-        const extraReferencesUsed=Number(res.headers.get('x-nexus-extra-references')||0);
-        const autoApprovedReferencesHeader=res.headers.get('x-nexus-auto-approved-references');
-        const autoApprovedReferencesFinal=
-          autoApprovedReferencesHeader!==null&&autoApprovedReferencesHeader!==''
-            ?Number(autoApprovedReferencesHeader)
-            :autoApprovedReferencesUsed;
-        const identityScoreRaw=res.headers.get('x-nexus-identity-score');
-        const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
-        const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
-        const textScoreRaw=res.headers.get('x-nexus-text-score');
-        const deterministicTextScoreRaw=res.headers.get('x-nexus-deterministic-text-score');
-        const exactTextMatchesRaw=res.headers.get('x-nexus-exact-text-matches');
-        const exactTextTotalRaw=res.headers.get('x-nexus-exact-text-total');
-        const referenceVerified=res.headers.get('x-nexus-reference-verified')==='1';
-        const referenceScoreRaw=res.headers.get('x-nexus-reference-score');
-        const referenceLeakageRaw=res.headers.get('x-nexus-reference-leakage');
-        const qualityGateState=res.headers.get('x-nexus-quality-gate')||'unverified';
-        const qualityGateScoreRaw=res.headers.get('x-nexus-quality-gate-score');
-        const qualityGateBlockersRaw=res.headers.get('x-nexus-quality-blockers')||'';
-        const imageWidth=Number(res.headers.get('x-nexus-image-width')||0);
-        const imageHeight=Number(res.headers.get('x-nexus-image-height')||0);
-        const identityScore=identityScoreRaw!==null&&identityScoreRaw!==''?Number(identityScoreRaw):null;
-        const fulfillmentScore=fulfillmentScoreRaw!==null&&fulfillmentScoreRaw!==''?Number(fulfillmentScoreRaw):null;
-        const artifactScore=artifactScoreRaw!==null&&artifactScoreRaw!==''?Number(artifactScoreRaw):null;
-        const textScore=textScoreRaw!==null&&textScoreRaw!==''?Number(textScoreRaw):null;
-        const deterministicTextScore=deterministicTextScoreRaw!==null&&deterministicTextScoreRaw!==''?Number(deterministicTextScoreRaw):null;
-        const exactTextMatches=exactTextMatchesRaw!==null&&exactTextMatchesRaw!==''?Number(exactTextMatchesRaw):null;
-        const exactTextTotal=exactTextTotalRaw!==null&&exactTextTotalRaw!==''?Number(exactTextTotalRaw):null;
-        const referenceScore=referenceScoreRaw!==null&&referenceScoreRaw!==''?Number(referenceScoreRaw):null;
-        const referenceLeakageRisk=referenceLeakageRaw!==null&&referenceLeakageRaw!==''?Number(referenceLeakageRaw):null;
-        const qualityGateScore=qualityGateScoreRaw!==null&&qualityGateScoreRaw!==''?Number(qualityGateScoreRaw):null;
-        const qualityGateBlockers=qualityGateBlockersRaw
-          ?qualityGateBlockersRaw.split(',').map(x=>x.trim()).filter(Boolean)
-          :[];
-        const candidateArenaUsed=res.headers.get('x-nexus-candidate-arena')==='1';
-        const selectedImageQuality=res.headers.get('x-nexus-selected-quality')||'';
-        const retryClass=res.headers.get('x-nexus-retry-class')||'';
-        const retryEditStrengthRaw=res.headers.get('x-nexus-retry-edit-strength');
-        const retryEditStrength=retryEditStrengthRaw!==null&&retryEditStrengthRaw!==''?Number(retryEditStrengthRaw):null;
-        const imagePipeline=res.headers.get('x-nexus-image-pipeline')||'';
-        const imageTotalMsRaw=res.headers.get('x-nexus-image-total-ms');
-        const imageTotalMs=imageTotalMsRaw!==null&&imageTotalMsRaw!==''?Number(imageTotalMsRaw):null;
-        const adaptiveUsed=res.headers.get('x-nexus-adaptive-router')==='1';
-        const adaptiveScoreRaw=res.headers.get('x-nexus-adaptive-score');
-        const adaptiveConfidenceRaw=res.headers.get('x-nexus-adaptive-confidence');
-        const adaptiveRouter={
-          adaptive:adaptiveUsed,
-          selected:{
-            model,
-            provider,
-            score:adaptiveScoreRaw!==null&&adaptiveScoreRaw!==''?Number(adaptiveScoreRaw):null,
-            confidence:adaptiveConfidenceRaw!==null&&adaptiveConfidenceRaw!==''?Number(adaptiveConfidenceRaw):null
-          }
+        const imagePayload={
+          prompt:effectiveText,
+          sourceImage,
+          rootReferenceImage,
+          extraReferenceImages,
+          autoApprovedReferenceCount:autoApprovedReferencesUsed,
+          previousPrompt,
+          history:imageScopedHistory,
+          sessionId:tid,
+          sourceWidth:sourceDimensions?.width||0,
+          sourceHeight:sourceDimensions?.height||0,
+          quality:wantsHighImageQuality(effectiveText)?'quality':'fast'
         };
 
-        const content={
-          strict_edit:'Edição localizada concluída com preservação da referência.',
-          enhance:'Imagem aprimorada com modo de preservação máxima.',
-          remove_replace:'Remoção/substituição concluída com edição localizada.',
-          background:'Fundo editado preservando o sujeito principal.',
-          identity_lock:'Edição concluída com bloqueio de identidade.',
-          poster:'Arte/poster gerado.',
-          create:'Imagem gerada.'
-        }[imageTask]||(
-          imageMode==='edit'
-            ?'Imagem editada mantendo a referência.'
-            :'Imagem gerada.'
-        );
+        let directRes=null;
+        const useImageWorkflow=Boolean(status?.providers?.imageWorkflow);
 
-        addMessage(tid,{
-          role:'assistant',
-          content,
-          media,
-          model,
-          provider,
-          promptExpanded,
-          promptModel,
-          visualVerified,
-          visualScore,
-          visualRetry,
-          imageTask,
-          imageCaseId,
-          preservationLevel,
-          identityScore,
-          fulfillmentScore,
-          artifactScore,
-          textScore,
-          deterministicTextScore,
-          exactTextMatches,
-          exactTextTotal,
-          referenceVerified,
-          referenceScore,
-          referenceLeakageRisk,
-          qualityGateState,
-          qualityGateScore,
-          qualityGateBlockers,
-          candidateArenaUsed,
-          selectedImageQuality,
-          retryClass,
-          retryEditStrength,
-          imagePipeline,
-          imageTotalMs,
-          imageWidth,
-          imageHeight,
-          visualRootKey:inheritedRootKey||media.key||null,
-          rootReferenceUsed,
-          extraReferencesUsed,
-          autoApprovedReferencesUsed:autoApprovedReferencesFinal,
-          adaptiveRouter,
+        if(useImageWorkflow){
+          const imageJobId=id();
+          const pendingMessage={
+            id:id(),
+            role:'assistant',
+            content:'Preparando geração de imagem em segundo plano…',
+            imageJobId,
+            imageJobStatus:'starting',
+            imageChainId,
+            visualRootKey:inheritedRootKey||null,
+            generationMode:'pending'
+          };
+
+          setThreads(p=>p.map(t=>t.id===tid?{
+            ...t,
+            messages:[...t.messages,pendingMessage]
+          }:t));
+
+          setBusy(false);
+
+          let startRes=null;
+          try{
+            startRes=await fetch('/api/image/start',{
+              method:'POST',
+              headers:apiHeaders(),
+              body:JSON.stringify({
+                ...imagePayload,
+                taskId:imageJobId
+              })
+            });
+          }catch{
+            updateMessage(tid,pendingMessage.id,{
+              imageJobStatus:'pending',
+              content:'A solicitação foi enviada. Vou verificar o job em segundo plano quando a conexão estabilizar.'
+            });
+            void resumePendingImageJob(tid,{
+              ...pendingMessage,
+              imageJobStatus:'pending'
+            });
+            return;
+          }
+
+          if(startRes.ok){
+            updateMessage(tid,pendingMessage.id,{
+              imageJobStatus:'running',
+              content:'Gerando imagem em segundo plano… você pode sair desta conversa.'
+            });
+            void resumePendingImageJob(tid,{
+              ...pendingMessage,
+              imageJobStatus:'running'
+            });
+            return;
+          }
+
+          const startData=await startRes.json().catch(()=>({}));
+          if(
+            startRes.status===503 &&
+            startData.error_kind==='image-workflow-unavailable'
+          ){
+            removeMessage(tid,pendingMessage.id);
+          }else{
+            updateMessage(tid,pendingMessage.id,{
+              imageJobStatus:'errored',
+              content:[
+                startData.error,
+                startData.provider_error
+              ].filter(Boolean).join(' — ')||
+              'Não consegui iniciar a geração de imagem.'
+            });
+            return;
+          }
+        }
+
+        directRes=await fetch('/api/image',{
+          method:'POST',
+          headers:apiHeaders(),
+          body:JSON.stringify(imagePayload)
+        });
+
+        await consumeImageResponse({
+          tid,
+          messageId:null,
+          res:directRes,
           imageChainId,
-          generationMode:imageMode
+          visualRootKey:inheritedRootKey||null
         });
       }else if(requestMode==='video'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
