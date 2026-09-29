@@ -351,6 +351,7 @@ function App(){
       meta:{
         generationMode:message?.generationMode||null,
         imageTask:message?.imageTask||null,
+        imageCaseId:message?.imageCaseId||null,
         preservationLevel:message?.preservationLevel||null,
         identityScore:Number.isFinite(message?.identityScore)?message.identityScore:null,
         fulfillmentScore:Number.isFinite(message?.fulfillmentScore)?message.fulfillmentScore:null,
@@ -765,6 +766,7 @@ function App(){
         const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
         const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
         const imageTask=res.headers.get('x-nexus-image-task')||imageMode;
+        const imageCaseId=res.headers.get('x-nexus-image-case-id')||'';
         const preservationLevel=res.headers.get('x-nexus-preservation')||'';
         const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
         const identityScoreRaw=res.headers.get('x-nexus-identity-score');
@@ -816,6 +818,7 @@ function App(){
           visualScore,
           visualRetry,
           imageTask,
+          imageCaseId,
           preservationLevel,
           identityScore,
           fulfillmentScore,
