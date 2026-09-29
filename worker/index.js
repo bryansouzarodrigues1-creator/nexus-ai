@@ -4118,6 +4118,33 @@ async function handleImage(request, env) {
               env,
             });
 
+        if (
+          sourceImage &&
+          manualExtraReferencesUsed > 0
+        ) {
+          const referenceCompliance =
+            await verifySupplementaryReferenceCompliance({
+              resultBlob: generatedBlob,
+              referenceImages:
+                extraReferenceImages.slice(
+                  0,
+                  manualExtraReferencesUsed
+                ),
+              referencePlan:
+                referenceIntelligence.plan,
+              prompt,
+              taskPlan,
+              sessionId,
+              env,
+            });
+
+          verification =
+            fuseReferenceCompliance(
+              verification,
+              referenceCompliance
+            );
+        }
+
         let best = {
           generated,
           verification,
@@ -4209,7 +4236,7 @@ async function handleImage(request, env) {
             { type: "image/jpeg" }
           );
 
-          const retryVerification = sourceImage
+          let retryVerification = sourceImage
             ? await verifyVisualEdit({
                 originalBlob: sourceImage,
                 rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
@@ -4236,6 +4263,38 @@ async function handleImage(request, env) {
                     : "",
                 env,
               });
+
+          if (
+            sourceImage &&
+            manualExtraReferencesUsed > 0
+          ) {
+            const retryReferenceCompliance =
+              await verifySupplementaryReferenceCompliance({
+                resultBlob: retryBlob,
+                referenceImages:
+                  extraReferenceImages.slice(
+                    0,
+                    manualExtraReferencesUsed
+                  ),
+                referencePlan:
+                  referenceIntelligence.plan,
+                prompt,
+                taskPlan,
+                sessionId:
+                  sessionId
+                    ? sessionId +
+                      "-retry-ref-" +
+                      retryCount
+                    : "",
+                env,
+              });
+
+            retryVerification =
+              fuseReferenceCompliance(
+                retryVerification,
+                retryReferenceCompliance
+              );
+          }
 
           const retryCandidateScore =
             visualCandidateScore(
@@ -4665,6 +4724,36 @@ async function handleImage(request, env) {
                 : "",
             env,
           });
+
+      if (
+        sourceImage &&
+        manualExtraReferencesUsed > 0
+      ) {
+        const fallbackReferenceCompliance =
+          await verifySupplementaryReferenceCompliance({
+            resultBlob: image,
+            referenceImages:
+              extraReferenceImages.slice(
+                0,
+                manualExtraReferencesUsed
+              ),
+            referencePlan:
+              referenceIntelligence.plan,
+            prompt,
+            taskPlan,
+            sessionId:
+              sessionId
+                ? sessionId + "-hf-ref"
+                : "",
+            env,
+          });
+
+        fallbackVerification =
+          fuseReferenceCompliance(
+            fallbackVerification,
+            fallbackReferenceCompliance
+          );
+      }
     }
 
     if (sessionId) {
