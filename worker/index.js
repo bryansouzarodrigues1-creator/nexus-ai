@@ -28,7 +28,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.9.0";
+const VERSION = "2.10.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -1030,6 +1030,7 @@ async function handleStatus(env) {
         modelPerformanceMemory: true,
         adaptiveRouting: true,
         operationalFailureIsolation: true,
+        providerHealthCooldowns: true,
       },
     },
     providers: {
@@ -1040,8 +1041,24 @@ async function handleStatus(env) {
       promptExpansion: Boolean(env.AI || env.HF_TOKEN),
       vision: Boolean(env.AI || env.HF_TOKEN),
       files: true,
-      image: Boolean(env.AI || env.HF_TOKEN),
-      imageEdit: Boolean(env.AI || env.HF_TOKEN),
+      image: Boolean(
+        env.AI ||
+        env.HF_TOKEN ||
+        env.WAVESPEED_API_KEY ||
+        env.NOVITA_API_KEY
+      ),
+      imageEdit: Boolean(
+        env.AI ||
+        env.HF_TOKEN ||
+        env.NOVITA_API_KEY
+      ),
+      imageProviderPool: true,
+      imageProviders: {
+        cloudflare: Boolean(env.AI),
+        huggingface: Boolean(env.HF_TOKEN),
+        wavespeed: Boolean(env.WAVESPEED_API_KEY),
+        novita: Boolean(env.NOVITA_API_KEY),
+      },
       imageWorkflow: Boolean(env.NEXUS_IMAGE),
       video: Boolean(
         videoEnabled &&
@@ -3565,6 +3582,525 @@ async function runCloudflareImage({
   };
 }
 
+
+function imageProviderCooldownMs(provider, kind) {
+  if (kind === "quota") {
+    if (provider === "cloudflare") {
+      const now = new Date();
+      const nextUtcMidnight = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+        0,
+        2,
+        0,
+        0
+      );
+      return Math.max(60 * 1000, nextUtcMidnight - Date.now());
+    }
+    return 12 * 60 * 60 * 1000;
+  }
+  if (kind === "rate-limit") return 10 * 60 * 1000;
+  if (kind === "auth") return 30 * 60 * 1000;
+  if (kind === "compatibility") return 12 * 60 * 60 * 1000;
+  if (kind === "timeout" || kind === "transient") return 2 * 60 * 1000;
+  return 90 * 1000;
+}
+
+function classifyImageProviderFailure(error) {
+  const text = String(
+    error?.message ||
+    error ||
+    ""
+  ).toLowerCase();
+
+  if (
+    /3036|4006|free allocation|used up.*neurons|depleted.*credits|monthly included credits|quota|credit.*exhaust|insufficient.*credit|payment required|billing|balance.*low|no credits/.test(text)
+  ) {
+    return { kind: "quota" };
+  }
+  if (/429|rate.?limit|too many|capacity temporarily exceeded|3040|throttl/.test(text)) {
+    return { kind: "rate-limit" };
+  }
+  if (/401|403|unauthor|forbidden|invalid.*key|api key|token.*invalid/.test(text)) {
+    return { kind: "auth" };
+  }
+  if (/404|not supported|unsupported|model.*not.*available|task.*not.*support|no such model/.test(text)) {
+    return { kind: "compatibility" };
+  }
+  if (/408|504|timeout|timed out|aborted|3007|3008/.test(text)) {
+    return { kind: "timeout" };
+  }
+  if (/500|502|503|service unavailable|bad gateway|temporar/.test(text)) {
+    return { kind: "transient" };
+  }
+  return { kind: "unknown" };
+}
+
+async function getImageProviderHealth(env) {
+  const stub = learningStub(env);
+  if (!stub) return {};
+  try {
+    return await stub.getProviderHealth();
+  } catch {
+    return {};
+  }
+}
+
+function imageProviderIsAvailable(health, provider) {
+  const item = health?.["image:" + provider];
+  return !item || Number(item.cooldownUntil || 0) <= Date.now();
+}
+
+async function markImageProviderFailure(env, provider, error) {
+  const stub = learningStub(env);
+  if (!stub) return null;
+  const classification = classifyImageProviderFailure(error);
+  try {
+    return await stub.markProviderFailure(
+      "image:" + provider,
+      {
+        kind: classification.kind,
+        reason: String(error?.message || error || "").slice(0, 1400),
+        cooldownMs: imageProviderCooldownMs(
+          provider,
+          classification.kind
+        ),
+      }
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function markImageProviderSuccess(env, provider) {
+  const stub = learningStub(env);
+  if (!stub) return null;
+  try {
+    return await stub.markProviderSuccess("image:" + provider);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchExternalImageBlob(url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error("Falha ao baixar imagem externa: HTTP " + res.status);
+  }
+  const blob = await res.blob();
+  if (!blob?.size) throw new Error("O provedor retornou uma imagem vazia.");
+  return blob;
+}
+
+async function pollWaveSpeedImage(resultUrl, apiKey, deadlineMs = 120000) {
+  const deadline = Date.now() + deadlineMs;
+  let waitMs = 1200;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(resultUrl, {
+      headers: { Authorization: "Bearer " + apiKey },
+    });
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok || (body?.code && body.code !== 200)) {
+      throw new Error(
+        body?.message ||
+        body?.error ||
+        "WaveSpeed polling HTTP " + res.status
+      );
+    }
+
+    const data = body?.data || body || {};
+    const status = String(data.status || "").toLowerCase();
+
+    if (status === "completed") {
+      const output = Array.isArray(data.outputs)
+        ? data.outputs[0]
+        : null;
+      if (!output || typeof output !== "string") {
+        throw new Error("WaveSpeed concluiu sem URL de imagem.");
+      }
+      return fetchExternalImageBlob(output);
+    }
+
+    if (["failed", "cancelled", "timeout", "deleted"].includes(status)) {
+      throw new Error(
+        data?.error ||
+        data?.message ||
+        "WaveSpeed terminou com status " + status
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    waitMs = Math.min(4000, waitMs + 500);
+  }
+
+  throw new Error("WaveSpeed excedeu o tempo máximo da imagem.");
+}
+
+async function generateWaveSpeedStillImage({
+  prompt,
+  width,
+  height,
+  env,
+}) {
+  const apiKey = String(env.WAVESPEED_API_KEY || "").trim();
+  if (!apiKey) throw new Error("WAVESPEED_API_KEY não configurada.");
+
+  const model = String(
+    env.WAVESPEED_IMAGE_MODEL ||
+    "wavespeed-ai/z-image/turbo"
+  );
+
+  const submit = await fetch(
+    "https://api.wavespeed.ai/api/v3/" + model,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt,
+        size:
+          roundImageDimension(width) +
+          "*" +
+          roundImageDimension(height),
+        seed: -1,
+        output_format: "jpeg",
+      }),
+    }
+  );
+
+  const body = await submit.json().catch(() => ({}));
+  if (!submit.ok || (body?.code && body.code !== 200)) {
+    throw new Error(
+      body?.message ||
+      body?.error ||
+      "WaveSpeed submit HTTP " + submit.status
+    );
+  }
+
+  const data = body?.data || body || {};
+  if (data.status === "completed" && Array.isArray(data.outputs) && data.outputs[0]) {
+    return {
+      image: await fetchExternalImageBlob(data.outputs[0]),
+      provider: "wavespeed",
+      model,
+    };
+  }
+
+  const taskId = data?.id;
+  const resultUrl =
+    data?.urls?.get ||
+    (taskId
+      ? "https://api.wavespeed.ai/api/v3/predictions/" +
+        encodeURIComponent(taskId) +
+        "/result"
+      : "");
+
+  if (!resultUrl) {
+    throw new Error("WaveSpeed não retornou task id/result URL.");
+  }
+
+  return {
+    image: await pollWaveSpeedImage(resultUrl, apiKey),
+    provider: "wavespeed",
+    model,
+  };
+}
+
+async function pollNovitaImage(taskId, apiKey, deadlineMs = 120000) {
+  const deadline = Date.now() + deadlineMs;
+  let waitMs = 1400;
+
+  while (Date.now() < deadline) {
+    const res = await fetch(
+      "https://api.novita.ai/v3/async/task-result?task_id=" +
+        encodeURIComponent(taskId),
+      {
+        headers: { Authorization: "Bearer " + apiKey },
+      }
+    );
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        body?.message ||
+        body?.error ||
+        body?.msg ||
+        "Novita polling HTTP " + res.status
+      );
+    }
+
+    const status = String(
+      body?.task?.status ||
+      body?.task_status ||
+      ""
+    ).toUpperCase();
+
+    if (
+      status === "TASK_STATUS_SUCCEED" ||
+      status === "SUCCEED" ||
+      status === "SUCCEEDED"
+    ) {
+      const url =
+        body?.images?.[0]?.image_url ||
+        body?.imgs?.[0]?.image_url ||
+        body?.data?.images?.[0]?.image_url;
+      if (!url) throw new Error("Novita concluiu sem image_url.");
+      return fetchExternalImageBlob(url);
+    }
+
+    if (
+      status === "TASK_STATUS_FAILED" ||
+      status === "FAILED" ||
+      status === "FAIL"
+    ) {
+      throw new Error(
+        body?.task?.reason ||
+        body?.message ||
+        body?.msg ||
+        "Novita informou falha na geração."
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    waitMs = Math.min(4500, waitMs + 550);
+  }
+
+  throw new Error("Novita excedeu o tempo máximo da imagem.");
+}
+
+async function generateNovitaStillImage({
+  prompt,
+  sourceImage,
+  rootReferenceImage,
+  extraReferenceImages = [],
+  width,
+  height,
+  quality,
+  env,
+}) {
+  const apiKey = String(env.NOVITA_API_KEY || "").trim();
+  if (!apiKey) throw new Error("NOVITA_API_KEY não configurada.");
+
+  const size =
+    Math.min(1536, roundImageDimension(width)) +
+    "*" +
+    Math.min(1536, roundImageDimension(height));
+
+  let endpoint;
+  let model;
+  let payload;
+
+  if (sourceImage) {
+    model = String(
+      env.NOVITA_IMAGE_EDIT_MODEL ||
+      "flux-1-kontext-dev"
+    );
+    endpoint =
+      "https://api.novita.ai/v3/async/" + model;
+
+    const refs = [
+      sourceImage,
+      rootReferenceImage,
+      ...(Array.isArray(extraReferenceImages)
+        ? extraReferenceImages
+        : []),
+    ].filter(Boolean).slice(0, 4);
+
+    const images = [];
+    for (const ref of refs) {
+      images.push(await blobToDataUrlServer(ref));
+    }
+
+    payload = {
+      prompt,
+      images,
+      fast_mode: quality !== "quality",
+      size,
+      num_inference_steps: quality === "quality" ? 28 : 20,
+      guidance_scale: 2.5,
+      num_images: 1,
+      seed: -1,
+      output_format: "jpeg",
+    };
+  } else {
+    model = String(
+      env.NOVITA_IMAGE_MODEL ||
+      "flux-2-dev"
+    );
+    endpoint =
+      "https://api.novita.ai/v3/async/" + model;
+    payload = {
+      prompt,
+      size,
+      seed: -1,
+    };
+  }
+
+  const submit = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const body = await submit.json().catch(() => ({}));
+  if (!submit.ok) {
+    throw new Error(
+      body?.message ||
+      body?.error ||
+      body?.msg ||
+      "Novita submit HTTP " + submit.status
+    );
+  }
+
+  const taskId =
+    body?.task_id ||
+    body?.data?.task_id ||
+    body?.task?.task_id;
+
+  if (!taskId) {
+    const directUrl =
+      body?.images?.[0]?.image_url ||
+      body?.data?.images?.[0]?.image_url;
+    if (directUrl) {
+      return {
+        image: await fetchExternalImageBlob(directUrl),
+        provider: "novita",
+        model,
+      };
+    }
+    throw new Error("Novita não retornou task_id.");
+  }
+
+  return {
+    image: await pollNovitaImage(taskId, apiKey),
+    provider: "novita",
+    model,
+  };
+}
+
+async function generateExternalImageFallback({
+  prompt,
+  sourceImage,
+  rootReferenceImage,
+  extraReferenceImages,
+  width,
+  height,
+  quality,
+  health,
+  env,
+}) {
+  const providers = sourceImage
+    ? ["novita"]
+    : ["wavespeed", "novita"];
+  const attempts = [];
+
+  for (const provider of providers) {
+    if (provider === "wavespeed" && !env.WAVESPEED_API_KEY) continue;
+    if (provider === "novita" && !env.NOVITA_API_KEY) continue;
+    if (!imageProviderIsAvailable(health, provider)) {
+      attempts.push({
+        provider,
+        skipped: true,
+        kind: health?.["image:" + provider]?.kind || "cooldown",
+        error: "provider em cooldown",
+      });
+      continue;
+    }
+
+    try {
+      const result =
+        provider === "wavespeed"
+          ? await generateWaveSpeedStillImage({
+              prompt,
+              width,
+              height,
+              env,
+            })
+          : await generateNovitaStillImage({
+              prompt,
+              sourceImage,
+              rootReferenceImage,
+              extraReferenceImages,
+              width,
+              height,
+              quality,
+              env,
+            });
+
+      await markImageProviderSuccess(env, provider);
+      return { ...result, attempts };
+    } catch (error) {
+      const classification = classifyImageProviderFailure(error);
+      await markImageProviderFailure(env, provider, error);
+      attempts.push({
+        provider,
+        skipped: false,
+        kind: classification.kind,
+        error: String(error?.message || error).slice(0, 1000),
+      });
+    }
+  }
+
+  const failure = new Error("Todos os provedores externos de imagem falharam.");
+  failure.attempts = attempts;
+  throw failure;
+}
+
+function externalImageResponse({
+  generated,
+  taskPlan,
+  imagePipelineProfile,
+  startedAt,
+  width,
+  height,
+}) {
+  const mode =
+    taskPlan?.mode === "poster"
+      ? "poster"
+      : taskPlan?.mode || "create";
+
+  return new Response(generated.image, {
+    headers: {
+      "Content-Type": generated.image.type || "image/jpeg",
+      "Cache-Control": "no-store",
+      "X-Nexus-Image-Mode": mode,
+      "X-Nexus-Image-Task": mode,
+      "X-Nexus-Image-Pipeline":
+        imagePipelineProfile + "+provider-pool",
+      "X-Nexus-Image-Total-Ms":
+        String(Date.now() - startedAt),
+      "X-Nexus-Preservation":
+        taskPlan?.preservationLevel || "",
+      "X-Nexus-Provider":
+        generated.provider,
+      "X-Nexus-Model":
+        generated.model,
+      "X-Nexus-Image-Width":
+        String(width || 0),
+      "X-Nexus-Image-Height":
+        String(height || 0),
+      "X-Nexus-Visual-Verified": "0",
+      "X-Nexus-Visual-Score": "",
+      "X-Nexus-Identity-Score": "",
+      "X-Nexus-Fulfillment-Score": "",
+      "X-Nexus-Artifact-Score": "",
+      "X-Nexus-Text-Score": "",
+      "X-Nexus-Visual-Retry": "0",
+      "X-Nexus-External-Fallback": "1",
+      "X-Nexus-External-Attempts":
+        String(generated.attempts?.length || 0),
+    },
+  });
+}
+
 async function convertDocumentAttachment(attachment, env) {
   if (!env.AI) throw new Error("Conversão de documentos requer Workers AI.");
   const blob = dataUrlToBlob(attachment?.dataUrl);
@@ -4061,8 +4597,33 @@ async function handleImage(request, env) {
   const startedAt = Date.now();
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
-  if (!env.AI && !env.HF_TOKEN)
-    return json({ error: "Nenhum provedor de imagem está disponível." }, 503);
+
+  const imageProviderHealth =
+    await getImageProviderHealth(env);
+  const cloudflareImageAvailable =
+    Boolean(env.AI) &&
+    imageProviderIsAvailable(
+      imageProviderHealth,
+      "cloudflare"
+    );
+  const huggingFaceImageAvailable =
+    Boolean(env.HF_TOKEN) &&
+    imageProviderIsAvailable(
+      imageProviderHealth,
+      "huggingface"
+    );
+
+  if (
+    !cloudflareImageAvailable &&
+    !huggingFaceImageAvailable &&
+    !env.WAVESPEED_API_KEY &&
+    !env.NOVITA_API_KEY
+  ) {
+    return json(
+      { error: "Nenhum provedor de imagem está disponível." },
+      503
+    );
+  }
 
   const imageLearningContext =
     await getLearningContext(env, "image");
@@ -4082,7 +4643,8 @@ async function handleImage(request, env) {
     extraReferencesUsed > 0;
 
   const taskPlan =
-    needsSemanticTaskRouter
+    needsSemanticTaskRouter &&
+    cloudflareImageAvailable
       ? await classifyImageTask({
           prompt,
           hasSourceImage:
@@ -4152,7 +4714,9 @@ async function handleImage(request, env) {
       : referenceSlots.extraStartIndex;
 
   const referenceIntelligence =
-    sourceImage && extraReferencesUsed > 0
+    sourceImage &&
+    extraReferencesUsed > 0 &&
+    cloudflareImageAvailable
       ? await buildReferenceIntelligence({
           extraReferenceImages,
           manualCount: manualExtraReferencesUsed,
@@ -4177,7 +4741,7 @@ async function handleImage(request, env) {
   let editSpec = null;
   let expansion = { prompt, expanded: false, model: null };
 
-  if (sourceImage && env.AI) {
+  if (sourceImage && cloudflareImageAvailable) {
     sourceDescription =
       await describeVisualImage(
         sourceImage,
@@ -4234,7 +4798,10 @@ async function handleImage(request, env) {
           env: {},
         });
     }
-  } else if (fullImagePreflight) {
+  } else if (
+    fullImagePreflight &&
+    (cloudflareImageAvailable || huggingFaceImageAvailable)
+  ) {
     expansion =
       await expandCreativePrompt({
         kind: "image",
@@ -4316,7 +4883,7 @@ async function handleImage(request, env) {
 
   let cloudflareImageError = null;
 
-  if (env.AI) {
+  if (cloudflareImageAvailable) {
     const qualities =
       quality === "quality"
         ? ["quality", "fast"]
@@ -4943,6 +5510,11 @@ async function handleImage(request, env) {
           }
         }
 
+        await markImageProviderSuccess(
+          env,
+          "cloudflare"
+        );
+
         const imageCase = await recordGlobalImageCase(env, {
           mode: finalMode,
           preservationLevel: taskPlan.preservationLevel,
@@ -5171,6 +5743,11 @@ async function handleImage(request, env) {
           error?.message || String(error);
         const failure =
           classifyAdaptiveFailure(error);
+        await markImageProviderFailure(
+          env,
+          "cloudflare",
+          error
+        );
         const failedModel =
           imageQuality === quality
             ? imageRoute.model
@@ -5202,17 +5779,144 @@ async function handleImage(request, env) {
     }
   }
 
-  if (!env.HF_TOKEN) {
+  const externalOutputSize =
+    computeImageOutputSize({
+      sourceWidth:
+        sourceImage ? sourceWidth : 0,
+      sourceHeight:
+        sourceImage ? sourceHeight : 0,
+      aspectRatio: taskPlan.aspectRatio,
+      quality,
+      taskMode: taskPlan.mode,
+    });
+
+  let externalImageError = "";
+
+  if (
+    env.WAVESPEED_API_KEY ||
+    env.NOVITA_API_KEY
+  ) {
+    try {
+      const externalGenerated =
+        await generateExternalImageFallback({
+          prompt: promptForModel,
+          sourceImage,
+          rootReferenceImage:
+            hasRootReference
+              ? rootReferenceImage
+              : null,
+          extraReferenceImages,
+          width:
+            externalOutputSize.width,
+          height:
+            externalOutputSize.height,
+          quality,
+          health: imageProviderHealth,
+          env,
+        });
+
+      await recordGlobalLearningOutcome(
+        env,
+        {
+          kind: "image",
+          provider:
+            externalGenerated.provider,
+          model:
+            externalGenerated.model,
+          ok: true,
+          retries:
+            externalGenerated.attempts?.length ||
+            0,
+          latencyMs:
+            Date.now() - startedAt,
+        }
+      );
+
+      if (sessionId) {
+        await recordServerMetric(
+          env,
+          sessionId,
+          {
+            type:
+              sourceImage
+                ? "image-edit"
+                : "image-generation",
+            route:
+              "visual-" +
+              (taskPlan.mode || "create"),
+            provider:
+              externalGenerated.provider,
+            model:
+              externalGenerated.model,
+            latencyMs:
+              Date.now() - startedAt,
+            ok: true,
+            meta: {
+              externalFallback: true,
+              cloudflareSkipped:
+                !cloudflareImageAvailable,
+              attempts:
+                externalGenerated.attempts
+                  ?.length || 0,
+            },
+          }
+        );
+      }
+
+      return externalImageResponse({
+        generated: externalGenerated,
+        taskPlan,
+        imagePipelineProfile,
+        startedAt,
+        width:
+          externalOutputSize.width,
+        height:
+          externalOutputSize.height,
+      });
+    } catch (error) {
+      externalImageError =
+        Array.isArray(error?.attempts)
+          ? error.attempts
+              .map((item) =>
+                [
+                  item.provider,
+                  item.kind,
+                  item.error,
+                ].filter(Boolean).join(": ")
+              )
+              .join(" | ")
+          : String(
+              error?.message || error
+            );
+    }
+  }
+
+  if (!huggingFaceImageAvailable) {
     return json(
       {
         error: sourceImage
-          ? "A edição com preservação de referência falhou no Cloudflare e não há fallback de edição disponível."
-          : "Não consegui gerar a imagem pelo Cloudflare e não há fallback configurado.",
-        provider_error:
-          cloudflareImageError ||
-          "Falha desconhecida do Workers AI.",
+          ? "Não consegui editar a imagem preservando a referência."
+          : "Não consegui gerar a imagem.",
+        provider_error: [
+          cloudflareImageError
+            ? "Cloudflare: " +
+              cloudflareImageError
+            : (
+                !cloudflareImageAvailable
+                  ? "Cloudflare temporariamente em cooldown."
+                  : ""
+              ),
+          externalImageError
+            ? "Provider pool: " +
+              externalImageError
+            : "",
+          env.HF_TOKEN
+            ? "Hugging Face temporariamente em cooldown."
+            : "Hugging Face não configurado.",
+        ].filter(Boolean).join(" | "),
+        error_kind: "providers-unavailable",
       },
-      502
+      429
     );
   }
 
@@ -5375,6 +6079,11 @@ async function handleImage(request, env) {
         latencyMs:
           Date.now() - startedAt,
       }
+    );
+
+    await markImageProviderSuccess(
+      env,
+      "huggingface"
     );
 
     const imageCase = await recordGlobalImageCase(env, {
@@ -5548,6 +6257,11 @@ async function handleImage(request, env) {
     const info = generationError(error);
     const failure =
       classifyAdaptiveFailure(error);
+    await markImageProviderFailure(
+      env,
+      "huggingface",
+      error
+    );
 
     await recordGlobalLearningOutcome(
       env,
@@ -5574,6 +6288,9 @@ async function handleImage(request, env) {
           cloudflareImageError
             ? "Cloudflare: " +
               cloudflareImageError
+            : "",
+          externalImageError
+            ? "Provider pool: " + externalImageError
             : "",
           "Hugging Face: " +
             info.message,
