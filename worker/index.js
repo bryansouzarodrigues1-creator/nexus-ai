@@ -251,40 +251,81 @@ function formatImageCaseContext(context) {
   const cases = Array.isArray(context?.cases) ? context.cases : [];
   if (!cases.length) return "";
 
-  return (
-    "CASOS VISUAIS ANTERIORES DO MESMO TIPO:\n" +
-    cases
-      .slice(0, 6)
-      .map((item, index) => {
-        const metrics = [
-          item?.score == null ? "" : "score=" + Math.round(Number(item.score) * 100) + "%",
-          item?.identity == null ? "" : "identidade=" + Math.round(Number(item.identity) * 100) + "%",
-          item?.requestFulfillment == null ? "" : "pedido=" + Math.round(Number(item.requestFulfillment) * 100) + "%",
-          item?.artifactFree == null ? "" : "artefatos=" + Math.round(Number(item.artifactFree) * 100) + "%",
-          "retries=" + Number(item?.retries || 0),
-          item?.pass ? "passou" : "falhou",
-        ].filter(Boolean).join(" · ");
+  const lineFor = (item, index) => {
+    const metrics = [
+      item?.score == null
+        ? ""
+        : "score=" + Math.round(Number(item.score) * 100) + "%",
+      item?.identity == null
+        ? ""
+        : "identidade=" + Math.round(Number(item.identity) * 100) + "%",
+      item?.requestFulfillment == null
+        ? ""
+        : "pedido=" + Math.round(Number(item.requestFulfillment) * 100) + "%",
+      item?.artifactFree == null
+        ? ""
+        : "artefatos=" + Math.round(Number(item.artifactFree) * 100) + "%",
+      Number.isFinite(Number(item?.semanticSimilarity))
+        ? "similaridade=" +
+          Math.round(Number(item.semanticSimilarity) * 100) +
+          "%"
+        : "",
+      "retries=" + Number(item?.retries || 0),
+    ].filter(Boolean).join(" · ");
 
-        return [
-          (index + 1) + ". modo=" + String(item?.mode || ""),
-          item?.intentSummary ? "intenção=" + String(item.intentSummary).slice(0, 500) : "",
-          Array.isArray(item?.targets) && item.targets.length
-            ? "alvos=" + item.targets.join("; ")
-            : "",
-          Number.isFinite(Number(item?.relevance))
-            ? "relevância=" + Math.round(Number(item.relevance) * 100) + "%"
-            : "",
-          metrics,
-          Array.isArray(item?.issues) && item.issues.length
-            ? "problemas=" + item.issues.join("; ")
-            : "",
-          Array.isArray(item?.unwantedChanges) && item.unwantedChanges.length
-            ? "mudanças indesejadas=" + item.unwantedChanges.join("; ")
-            : "",
-        ].filter(Boolean).join(" | ");
-      })
-      .join("\n")
-  ).slice(0, 6500);
+    return [
+      (index + 1) + ". modo=" + String(item?.mode || ""),
+      item?.intentSummary
+        ? "intenção=" + String(item.intentSummary).slice(0, 500)
+        : "",
+      Array.isArray(item?.targets) && item.targets.length
+        ? "alvos=" + item.targets.join("; ")
+        : "",
+      metrics,
+      Array.isArray(item?.successCriteria) && item.successCriteria.length
+        ? "critérios=" + item.successCriteria.join("; ")
+        : "",
+      Array.isArray(item?.issues) && item.issues.length
+        ? "problemas=" + item.issues.join("; ")
+        : "",
+      Array.isArray(item?.unwantedChanges) && item.unwantedChanges.length
+        ? "mudanças indesejadas=" + item.unwantedChanges.join("; ")
+        : "",
+    ].filter(Boolean).join(" | ");
+  };
+
+  const successes = cases
+    .filter((item) => item?.pass !== false)
+    .slice(0, 5);
+
+  const failures = cases
+    .filter((item) => item?.pass === false)
+    .sort(
+      (a, b) =>
+        Number(b?.semanticSimilarity || 0) -
+          Number(a?.semanticSimilarity || 0) ||
+        Number(b?.relevance || 0) -
+          Number(a?.relevance || 0)
+    )
+    .slice(0, 3);
+
+  const parts = [];
+
+  if (successes.length) {
+    parts.push(
+      "EXEMPLOS VISUAIS PARECIDOS QUE FUNCIONARAM:\n" +
+      successes.map(lineFor).join("\n")
+    );
+  }
+
+  if (failures.length) {
+    parts.push(
+      "ERROS PARECIDOS JÁ OBSERVADOS — NÃO REPETIR:\n" +
+      failures.map(lineFor).join("\n")
+    );
+  }
+
+  return parts.join("\n\n").slice(0, 7200);
 }
 
 function buildModeAwareImageStats(genericStats, imageCases) {
