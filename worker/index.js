@@ -6924,6 +6924,7 @@ async function enforceRateLimit(request, env, pathname) {
     !pathname.startsWith("/api/") ||
     pathname === "/api/status" ||
     pathname === "/api/learning/status" ||
+    pathname.startsWith("/api/image/jobs/") ||
     (request.method === "GET" && pathname.startsWith("/api/agent/"))
   ) {
     return null;
@@ -6934,7 +6935,10 @@ async function enforceRateLimit(request, env, pathname) {
     request.headers.get("cf-ray") ||
     "anonymous";
 
-  const isMedia = pathname === "/api/image" || pathname === "/api/video";
+  const isMedia =
+    pathname === "/api/image" ||
+    pathname === "/api/image/start" ||
+    pathname === "/api/video";
   const limiter = isMedia ? env.MEDIA_RATE_LIMITER : env.AI_RATE_LIMITER;
 
   try {
