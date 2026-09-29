@@ -71,6 +71,16 @@ async function loadMedia(key){
   return blob;
 }
 
+async function mediaKeyAsDataUrl(key){
+  if(!key)return null;
+  try{
+    const blob=await loadMedia(key);
+    return blob?await blobToDataUrl(blob):null;
+  }catch{
+    return null;
+  }
+}
+
 function blobToDataUrl(blob){
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
@@ -376,7 +386,9 @@ function App(){
         fulfillmentScore:Number.isFinite(message?.fulfillmentScore)?message.fulfillmentScore:null,
         artifactScore:Number.isFinite(message?.artifactScore)?message.artifactScore:null,
         retries:Number(message?.visualRetry||message?.videoFallbacks||0),
-        adaptiveRouter:message?.adaptiveRouter||null
+        adaptiveRouter:message?.adaptiveRouter||null,
+        rootReferenceUsed:Boolean(message?.rootReferenceUsed),
+        visualRootKey:message?.visualRootKey||null
       }
     };
 
@@ -671,6 +683,35 @@ function App(){
         const sourceImageRaw=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :continuePrevious?await mediaAsDataUrl(previousImage):null;
+
+        const inheritedRootKey=
+          activeAttachment?.kind==='image'
+            ?attachedMedia?.key||null
+            :continuePrevious
+              ?(
+                  previousImage?.visualRootKey||
+                  previousImage?.media?.key||
+                  null
+                )
+              :null;
+
+        const previousMediaKey=previousImage?.media?.key||null;
+        const shouldSendRootReference=
+          Boolean(
+            continuePrevious &&
+            inheritedRootKey &&
+            previousMediaKey &&
+            inheritedRootKey!==previousMediaKey
+          );
+
+        const rootReferenceRaw=shouldSendRootReference
+          ?await mediaKeyAsDataUrl(inheritedRootKey)
+          :null;
+
+        const rootReferenceImage=rootReferenceRaw
+          ?await shrinkImageDataUrl(rootReferenceRaw,500)
+          :null;
+
         const sourceDimensions=sourceImageRaw
           ?await imageDataUrlDimensions(sourceImageRaw)
           :null;
@@ -690,6 +731,7 @@ function App(){
           body:JSON.stringify({
             prompt:effectiveText,
             sourceImage,
+            rootReferenceImage,
             previousPrompt,
             history:creativeHistory,
             sessionId:tid,
@@ -721,6 +763,7 @@ function App(){
         const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
         const imageTask=res.headers.get('x-nexus-image-task')||imageMode;
         const preservationLevel=res.headers.get('x-nexus-preservation')||'';
+        const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
         const identityScoreRaw=res.headers.get('x-nexus-identity-score');
         const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
         const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
@@ -777,6 +820,8 @@ function App(){
           textScore,
           imageWidth,
           imageHeight,
+          visualRootKey:inheritedRootKey||media.key||null,
+          rootReferenceUsed,
           adaptiveRouter,
           generationMode:imageMode
         });
@@ -1115,7 +1160,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
