@@ -103,7 +103,9 @@ textRequirements[]
 
 ### Visual Verifier V2
 
-O verificador tenta comparar diretamente a imagem original e o resultado usando o modelo de visão. Se a comparação multimodal não estiver disponível, usa descrições visuais como fallback.
+Em edição, o verificador tenta comparar diretamente a imagem original e o resultado usando o modelo de visão. Se a comparação multimodal não estiver disponível, usa descrições visuais como fallback.
+
+Criações do zero e posters também passam por um Generation Verifier. Ele compara o resultado com o pedido, verifica composição, cumprimento do prompt, artefatos, realismo e fidelidade de texto. Portanto o auto-reparo não fica limitado a edições.
 
 Scores avaliados:
 - qualidade global;
@@ -120,7 +122,7 @@ Os limiares ficam mais rígidos quando o Task Router marca preservação `high` 
 
 ### Retry corretivo orientado por falha
 
-No modo Qualidade, uma edição reprovada pode receber até duas novas tentativas. Cada retry recebe os problemas concretos detectados pelo verifier.
+No modo Qualidade, uma edição ou geração reprovada pode receber até duas novas tentativas. Cada retry recebe os problemas concretos detectados pelo verifier. No modo rápido, uma tentativa corretiva pode ser feita quando a verificação está disponível.
 
 A NEXUS não escolhe automaticamente o último resultado: cada candidato recebe score ponderado e a melhor tentativa vence.
 
@@ -137,6 +139,21 @@ Para criação sem referência, o Task Router escolhe entre proporções comuns 
 ### Aprendizado visual
 
 Falhas finais do Visual Verifier podem virar lições reutilizáveis no Learning Loop, incluindo o tipo da tarefa e o nível de preservação.
+
+A V2.6 também mantém uma **Image Case Memory** persistente. Ela não guarda os pixels/imagens geradas. Guarda somente metadados úteis de experiência, como:
+- modo visual;
+- resumo da intenção;
+- nível de preservação;
+- provider/modelo;
+- score;
+- identidade;
+- cumprimento do pedido;
+- artefatos;
+- fidelidade de texto;
+- retries;
+- problemas e mudanças indesejadas observadas.
+
+Antes de uma nova tarefa visual, casos anteriores do mesmo modo podem ser recuperados e usados pelo Visual Context Extractor/Edit Planner.
 
 A UI exibe quando disponível:
 - tipo de tarefa visual;
