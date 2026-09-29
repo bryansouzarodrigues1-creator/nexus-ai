@@ -15,6 +15,7 @@ import {
   scoreExactTextRequirements,
   fuseReferenceCompliance,
   applyImageQualityGate,
+  planImageRetryStrategy,
 } from "./image-quality-gate.js";
 import {
   extractExactRequestedText,
@@ -4188,6 +4189,7 @@ async function handleImage(request, env) {
                   taskPlan
                 )
               : 1,
+          retryStrategy: null,
         };
 
         const maxRetries =
@@ -4203,9 +4205,21 @@ async function handleImage(request, env) {
           retryCount += 1;
 
           const v = best.verification;
+          const retryStrategy =
+            planImageRetryStrategy(
+              v,
+              taskPlan,
+              retryCount
+            );
           const retryPrompt = [
             promptForModel,
             "CORRECTION PASS " + retryCount + ":",
+            "RETRY STRATEGY: " +
+              retryStrategy.retryClass +
+              ". " +
+              retryStrategy.promptHint,
+            "TARGET EDIT STRENGTH: " +
+              retryStrategy.editStrength.toFixed(2),
             v.retryInstruction ||
               "Preserve the original reference more strictly and fix only the requested target.",
             v.issues?.length
@@ -4255,11 +4269,8 @@ async function handleImage(request, env) {
             extraReferenceImages,
             width: outputSize.width,
             height: outputSize.height,
-            editStrength: Math.max(
-              0.05,
-              Number(taskPlan.editStrength || 0.22) -
-                retryCount * 0.04
-            ),
+            editStrength:
+              retryStrategy.editStrength,
             env,
           });
 
@@ -4348,6 +4359,7 @@ async function handleImage(request, env) {
               verification: retryVerification,
               retryCount,
               candidateScore: retryCandidateScore,
+              retryStrategy,
             };
           }
 
@@ -4406,6 +4418,10 @@ async function handleImage(request, env) {
                   best.verification?.referenceLeakageRisk,
                 retryCount:
                   best.retryCount,
+                retryClass:
+                  best.retryStrategy?.retryClass || "",
+                retryEditStrength:
+                  best.retryStrategy?.editStrength ?? null,
                 qualityGatePass:
                   best.verification?.qualityGate?.verified
                     ? Boolean(best.verification.qualityGate.pass)
