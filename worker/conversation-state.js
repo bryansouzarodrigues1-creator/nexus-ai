@@ -511,6 +511,10 @@ export class ConversationState extends DurableObject {
       textAccuracy: clampScore(caseData.textAccuracy),
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
       rootReferenceUsed: Boolean(caseData.rootReferenceUsed),
+      extraReferencesUsed: Math.max(
+        0,
+        Math.min(3, Number(caseData.extraReferencesUsed || 0))
+      ),
       userSignal: cleanSignal(caseData.userSignal || "neutral"),
       userFeedbackAt: Number(caseData.userFeedbackAt || 0),
       targets: cleanStringArrayForCase(caseData.targets, 12),
