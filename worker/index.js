@@ -20,7 +20,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.7.2";
+const VERSION = "2.8.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -4174,6 +4174,10 @@ async function handleImage(request, env) {
                 String(extraReferencesUsed),
               "X-Nexus-Auto-Approved-References":
                 String(autoApprovedReferencesUsed),
+              "X-Nexus-Manual-References":
+                String(manualExtraReferencesUsed),
+              "X-Nexus-Reference-Intelligence":
+                referenceContextText ? "1" : "0",
               "X-Nexus-Provider": "cloudflare",
               "X-Nexus-Model":
                 best.generated.model,
@@ -4473,6 +4477,9 @@ async function handleImage(request, env) {
         "X-Nexus-Root-Reference": "0",
         "X-Nexus-Extra-References": "0",
         "X-Nexus-Auto-Approved-References": "0",
+        "X-Nexus-Manual-References": "0",
+        "X-Nexus-Reference-Intelligence":
+          referenceContextText ? "1" : "0",
         "X-Nexus-Provider":
           "huggingface",
         "X-Nexus-Model": model,
