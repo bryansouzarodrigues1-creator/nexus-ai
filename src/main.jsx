@@ -197,6 +197,76 @@ async function waitForAgent(taskId){
   throw new Error('A tarefa profunda continua processando por mais tempo que o esperado. Tente consultar novamente em instantes.');
 }
 
+
+async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
+  const started=Date.now();
+  let delay=900;
+
+  while(Date.now()-started<timeoutMs){
+    const res=await fetch(
+      '/api/image/jobs/'+encodeURIComponent(taskId)+
+      '?sessionId='+encodeURIComponent(sessionId),
+      {headers:{'x-nexus-client':getClientId()}}
+    );
+
+    const data=await res.json().catch(()=>({}));
+
+    if(!res.ok){
+      const error=new Error(
+        data.error||
+        data.provider_error||
+        'Não consegui consultar a geração de imagem.'
+      );
+      error.imageJobStatus=res.status===404?'unknown':'network';
+      throw error;
+    }
+
+    if(data.ready||data.status==='complete'){
+      return data;
+    }
+
+    if(data.status==='errored'||data.status==='terminated'){
+      const error=new Error(
+        data.task?.error||
+        data.error?.message||
+        'A geração de imagem não conseguiu terminar.'
+      );
+      error.imageJobStatus='errored';
+      throw error;
+    }
+
+    await sleep(delay);
+    delay=Math.min(2500,delay+250);
+  }
+
+  const error=new Error(
+    'A imagem ainda está processando. A NEXUS continuará procurando o resultado quando você voltar.'
+  );
+  error.imageJobStatus='pending';
+  throw error;
+}
+
+async function fetchImageJobResult(taskId,sessionId){
+  return fetch(
+    '/api/image/jobs/'+encodeURIComponent(taskId)+
+    '/result?sessionId='+encodeURIComponent(sessionId),
+    {headers:{'x-nexus-client':getClientId()}}
+  );
+}
+
+function ackImageJob(taskId,sessionId){
+  if(!taskId||!sessionId)return;
+  void fetch(
+    '/api/image/jobs/'+encodeURIComponent(taskId)+
+    '/ack?sessionId='+encodeURIComponent(sessionId),
+    {
+      method:'POST',
+      headers:apiHeaders(),
+      body:'{}'
+    }
+  ).catch(()=>{});
+}
+
 function detectExplicitMediaIntent(text){
   const value=String(text||'').trim();
 
@@ -228,8 +298,11 @@ function App(){
   const [learningStatus,setLearningStatus]=useState(null);
   const [learningBusy,setLearningBusy]=useState(false);
   const fileRef=useRef(null);
+  const threadsRef=useRef(initialThreads);
+  const imageJobsInFlight=useRef(new Set());
 
   useEffect(()=>{
+    threadsRef.current=threads;
     const serializable=threads.map(t=>({
       ...t,
       messages:t.messages.map(m=>({
@@ -242,6 +315,25 @@ function App(){
 
   useEffect(()=>{
     fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
+  },[]);
+
+  useEffect(()=>{
+    const timer=setTimeout(()=>resumeAllPendingImageJobs(),450);
+    const onOnline=()=>resumeAllPendingImageJobs();
+    const onVisibility=()=>{
+      if(document.visibilityState==='visible'){
+        resumeAllPendingImageJobs();
+      }
+    };
+
+    window.addEventListener('online',onOnline);
+    document.addEventListener('visibilitychange',onVisibility);
+
+    return()=>{
+      clearTimeout(timer);
+      window.removeEventListener('online',onOnline);
+      document.removeEventListener('visibilitychange',onVisibility);
+    };
   },[]);
 
   async function loadLearningStatus(){
@@ -322,6 +414,13 @@ function App(){
     setThreads(p=>p.map(t=>t.id===tid?{
       ...t,
       messages:t.messages.map(m=>m.id===msgId?{...m,...patch}:m)
+    }:t));
+  }
+
+  function removeMessage(tid,msgId){
+    setThreads(p=>p.map(t=>t.id===tid?{
+      ...t,
+      messages:t.messages.filter(m=>m.id!==msgId)
     }:t));
   }
 
@@ -452,6 +551,225 @@ function App(){
     const key=id();
     try{await saveMedia(key,blob)}catch{}
     return {type,key,url:URL.createObjectURL(blob)};
+  }
+
+
+  async function consumeImageResponse({
+    tid,
+    messageId,
+    res,
+    imageChainId,
+    visualRootKey,
+    imageJobId=''
+  }){
+    const type=res.headers.get('content-type')||'';
+    if(!res.ok||type.includes('application/json')){
+      const data=await res.json().catch(()=>({}));
+      throw new Error(
+        [data.error,data.provider_error].filter(Boolean).join(' — ')||
+        'Falha no motor de imagem.'
+      );
+    }
+
+    const blob=await res.blob();
+    const media=await storeGeneratedMedia(blob,'image');
+    const imageMode=res.headers.get('x-nexus-image-mode')||'new';
+    const model=res.headers.get('x-nexus-model')||'';
+    const provider=res.headers.get('x-nexus-provider')||'';
+    const promptExpanded=res.headers.get('x-nexus-prompt-expanded')==='1';
+    const promptModel=res.headers.get('x-nexus-prompt-model')||'';
+    const visualVerified=res.headers.get('x-nexus-visual-verified')==='1';
+    const visualScoreRaw=res.headers.get('x-nexus-visual-score');
+    const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
+    const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
+    const imageTask=res.headers.get('x-nexus-image-task')||imageMode;
+    const imageCaseId=res.headers.get('x-nexus-image-case-id')||'';
+    const preservationLevel=res.headers.get('x-nexus-preservation')||'';
+    const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
+    const extraReferencesUsed=Number(res.headers.get('x-nexus-extra-references')||0);
+    const autoApprovedReferencesHeader=res.headers.get('x-nexus-auto-approved-references');
+    const autoApprovedReferencesFinal=
+      autoApprovedReferencesHeader!==null&&autoApprovedReferencesHeader!==''
+        ?Number(autoApprovedReferencesHeader)
+        :0;
+    const identityScoreRaw=res.headers.get('x-nexus-identity-score');
+    const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
+    const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
+    const textScoreRaw=res.headers.get('x-nexus-text-score');
+    const deterministicTextScoreRaw=res.headers.get('x-nexus-deterministic-text-score');
+    const exactTextMatchesRaw=res.headers.get('x-nexus-exact-text-matches');
+    const exactTextTotalRaw=res.headers.get('x-nexus-exact-text-total');
+    const referenceVerified=res.headers.get('x-nexus-reference-verified')==='1';
+    const referenceScoreRaw=res.headers.get('x-nexus-reference-score');
+    const referenceLeakageRaw=res.headers.get('x-nexus-reference-leakage');
+    const qualityGateState=res.headers.get('x-nexus-quality-gate')||'unverified';
+    const qualityGateScoreRaw=res.headers.get('x-nexus-quality-gate-score');
+    const qualityGateBlockersRaw=res.headers.get('x-nexus-quality-blockers')||'';
+    const imageWidth=Number(res.headers.get('x-nexus-image-width')||0);
+    const imageHeight=Number(res.headers.get('x-nexus-image-height')||0);
+    const identityScore=identityScoreRaw!==null&&identityScoreRaw!==''?Number(identityScoreRaw):null;
+    const fulfillmentScore=fulfillmentScoreRaw!==null&&fulfillmentScoreRaw!==''?Number(fulfillmentScoreRaw):null;
+    const artifactScore=artifactScoreRaw!==null&&artifactScoreRaw!==''?Number(artifactScoreRaw):null;
+    const textScore=textScoreRaw!==null&&textScoreRaw!==''?Number(textScoreRaw):null;
+    const deterministicTextScore=deterministicTextScoreRaw!==null&&deterministicTextScoreRaw!==''?Number(deterministicTextScoreRaw):null;
+    const exactTextMatches=exactTextMatchesRaw!==null&&exactTextMatchesRaw!==''?Number(exactTextMatchesRaw):null;
+    const exactTextTotal=exactTextTotalRaw!==null&&exactTextTotalRaw!==''?Number(exactTextTotalRaw):null;
+    const referenceScore=referenceScoreRaw!==null&&referenceScoreRaw!==''?Number(referenceScoreRaw):null;
+    const referenceLeakageRisk=referenceLeakageRaw!==null&&referenceLeakageRaw!==''?Number(referenceLeakageRaw):null;
+    const qualityGateScore=qualityGateScoreRaw!==null&&qualityGateScoreRaw!==''?Number(qualityGateScoreRaw):null;
+    const qualityGateBlockers=qualityGateBlockersRaw
+      ?qualityGateBlockersRaw.split(',').map(x=>x.trim()).filter(Boolean)
+      :[];
+    const candidateArenaUsed=res.headers.get('x-nexus-candidate-arena')==='1';
+    const selectedImageQuality=res.headers.get('x-nexus-selected-quality')||'';
+    const retryClass=res.headers.get('x-nexus-retry-class')||'';
+    const retryEditStrengthRaw=res.headers.get('x-nexus-retry-edit-strength');
+    const retryEditStrength=retryEditStrengthRaw!==null&&retryEditStrengthRaw!==''?Number(retryEditStrengthRaw):null;
+    const imagePipeline=res.headers.get('x-nexus-image-pipeline')||'';
+    const imageTotalMsRaw=res.headers.get('x-nexus-image-total-ms');
+    const imageTotalMs=imageTotalMsRaw!==null&&imageTotalMsRaw!==''?Number(imageTotalMsRaw):null;
+    const adaptiveUsed=res.headers.get('x-nexus-adaptive-router')==='1';
+    const adaptiveScoreRaw=res.headers.get('x-nexus-adaptive-score');
+    const adaptiveConfidenceRaw=res.headers.get('x-nexus-adaptive-confidence');
+    const adaptiveRouter={
+      adaptive:adaptiveUsed,
+      selected:{
+        model,
+        provider,
+        score:adaptiveScoreRaw!==null&&adaptiveScoreRaw!==''?Number(adaptiveScoreRaw):null,
+        confidence:adaptiveConfidenceRaw!==null&&adaptiveConfidenceRaw!==''?Number(adaptiveConfidenceRaw):null
+      }
+    };
+
+    const content={
+      strict_edit:'Edição localizada concluída com preservação da referência.',
+      enhance:'Imagem aprimorada com modo de preservação máxima.',
+      remove_replace:'Remoção/substituição concluída com edição localizada.',
+      background:'Fundo editado preservando o sujeito principal.',
+      identity_lock:'Edição concluída com bloqueio de identidade.',
+      poster:'Arte/poster gerado.',
+      create:'Imagem gerada.'
+    }[imageTask]||(
+      imageMode==='edit'
+        ?'Imagem editada mantendo a referência.'
+        :'Imagem gerada.'
+    );
+
+    const patch={
+      role:'assistant',
+      content,
+      media,
+      model,
+      provider,
+      promptExpanded,
+      promptModel,
+      visualVerified,
+      visualScore,
+      visualRetry,
+      imageTask,
+      imageCaseId,
+      preservationLevel,
+      identityScore,
+      fulfillmentScore,
+      artifactScore,
+      textScore,
+      deterministicTextScore,
+      exactTextMatches,
+      exactTextTotal,
+      referenceVerified,
+      referenceScore,
+      referenceLeakageRisk,
+      qualityGateState,
+      qualityGateScore,
+      qualityGateBlockers,
+      candidateArenaUsed,
+      selectedImageQuality,
+      retryClass,
+      retryEditStrength,
+      imagePipeline,
+      imageTotalMs,
+      imageWidth,
+      imageHeight,
+      visualRootKey:visualRootKey||media.key||null,
+      rootReferenceUsed,
+      extraReferencesUsed,
+      autoApprovedReferencesUsed:autoApprovedReferencesFinal,
+      adaptiveRouter,
+      imageChainId,
+      generationMode:imageMode,
+      imageJobId:imageJobId||null,
+      imageJobStatus:'complete',
+      imageJobResumed:res.headers.get('x-nexus-image-resumed')==='1'
+    };
+
+    if(messageId){
+      updateMessage(tid,messageId,patch);
+    }else{
+      addMessage(tid,patch);
+    }
+
+    if(imageJobId){
+      ackImageJob(imageJobId,tid);
+    }
+
+    return patch;
+  }
+
+  async function resumePendingImageJob(tid,message){
+    const jobId=message?.imageJobId;
+    if(!jobId||message?.imageJobStatus==='complete')return;
+    if(imageJobsInFlight.current.has(jobId))return;
+
+    imageJobsInFlight.current.add(jobId);
+
+    try{
+      updateMessage(tid,message.id,{
+        imageJobStatus:'running',
+        content:'Gerando imagem em segundo plano… você pode sair desta conversa.'
+      });
+
+      await pollImageJob(jobId,tid);
+      const res=await fetchImageJobResult(jobId,tid);
+
+      await consumeImageResponse({
+        tid,
+        messageId:message.id,
+        res,
+        imageChainId:message.imageChainId||null,
+        visualRootKey:message.visualRootKey||null,
+        imageJobId:jobId
+      });
+    }catch(e){
+      if(e?.imageJobStatus==='errored'){
+        updateMessage(tid,message.id,{
+          imageJobStatus:'errored',
+          content:e.message||'A geração de imagem falhou.'
+        });
+      }else{
+        updateMessage(tid,message.id,{
+          imageJobStatus:'pending',
+          content:'A geração continua em segundo plano. Vou recuperar a imagem quando a conexão/tela voltar.'
+        });
+      }
+    }finally{
+      imageJobsInFlight.current.delete(jobId);
+    }
+  }
+
+  function resumeAllPendingImageJobs(){
+    const currentThreads=threadsRef.current||[];
+    for(const t of currentThreads){
+      for(const message of t.messages||[]){
+        if(
+          message?.role==='assistant' &&
+          message?.imageJobId &&
+          message?.imageJobStatus!=='complete' &&
+          message?.imageJobStatus!=='errored'
+        ){
+          void resumePendingImageJob(t.id,message);
+        }
+      }
+    }
   }
 
   async function pollTask(taskId,timeoutMs=120000){
