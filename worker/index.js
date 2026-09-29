@@ -1933,6 +1933,7 @@ async function buildVisualEditSpec({
       previousPrompt,
       taskPlan,
       visualContext,
+      caseContext,
       sessionId,
       env: {},
     });
