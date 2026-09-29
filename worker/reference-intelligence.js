@@ -81,6 +81,12 @@ export function sanitizeReferencePlan(parsed, skeleton) {
 
   return {
     references: base.map((fallback) => {
+      // Prior outputs explicitly approved by the user are continuity anchors.
+      // Never let an LLM reinterpret them as a source of stale mutable state.
+      if (fallback.source === "approved_history") {
+        return fallback;
+      }
+
       const candidate = byIndex.get(Number(fallback.imageIndex));
       if (!candidate) return fallback;
 
