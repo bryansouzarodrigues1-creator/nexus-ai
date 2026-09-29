@@ -5,6 +5,7 @@ import {
   rankAdaptiveCandidates,
 } from "./adaptive-router.js";
 import { shouldPrioritizeImageFidelity } from "./image-routing-policy.js";
+import { allocateImageReferenceSlots } from "./image-reference-policy.js";
 import {
   extractExactRequestedText,
   inferNaturalAspectRatio,
@@ -3404,12 +3405,13 @@ async function handleImage(request, env) {
         .map((item) => dataUrlToBlob(item))
         .filter(Boolean)
     : [];
-  const maxSupplementaryReferences =
-    sourceImage
-      ? Math.max(0, 3 - (hasRootReference ? 1 : 0))
-      : 0;
+  const referenceSlots = allocateImageReferenceSlots({
+    hasSourceImage: Boolean(sourceImage),
+    hasRootReference,
+    requestedExtraCount: requestedExtraReferenceImages.length,
+  });
   const extraReferenceImages =
-    requestedExtraReferenceImages.slice(0, maxSupplementaryReferences);
+    requestedExtraReferenceImages.slice(0, referenceSlots.extraCount);
   const extraReferencesUsed = extraReferenceImages.length;
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
