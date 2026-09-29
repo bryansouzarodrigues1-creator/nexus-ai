@@ -1,8 +1,42 @@
-# NEXUS AI v2.9
+# NEXUS AI v2.10
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## Image Provider Pool V2.10
+
+A NEXUS agora trata cota de imagem como estado operacional, não como falha de qualidade.
+
+Ordem prática:
+
+```text
+Cloudflare Workers AI
+  ↓ indisponível / cota
+WaveSpeed (criação do zero)
+  ↓
+Novita (criação + edição com referência)
+  ↓
+Hugging Face
+```
+
+Regras importantes:
+- erro de cota da Cloudflare (incluindo 3036/limite diário) coloca `image:cloudflare` em cooldown até o próximo reset UTC;
+- rate limit, autenticação, incompatibilidade e timeout possuem cooldowns próprios;
+- provider em cooldown é pulado em requisições seguintes;
+- WaveSpeed usa por padrão `wavespeed-ai/z-image/turbo` para criação barata e rápida;
+- Novita usa por padrão `flux-2-dev` para criação e `flux-1-kontext-dev` para edição com referência;
+- vídeo continua pausado;
+- os jobs de imagem continuam duráveis/resumíveis: sair da conversa não deve cancelar o job.
+
+Secrets opcionais:
+
+```text
+WAVESPEED_API_KEY
+NOVITA_API_KEY
+```
+
+Sem esses secrets, a NEXUS continua usando apenas os providers já configurados.
 
 ## Resilient Image Jobs — v2.9
 
