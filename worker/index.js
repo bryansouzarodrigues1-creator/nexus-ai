@@ -4,6 +4,7 @@ import {
   compactAdaptiveDecision,
   rankAdaptiveCandidates,
 } from "./adaptive-router.js";
+import { shouldPrioritizeImageFidelity } from "./image-routing-policy.js";
 import {
   extractExactRequestedText,
   inferNaturalAspectRatio,
@@ -1353,9 +1354,12 @@ function resolveAdaptiveImageRoute({
             : 0.76;
 
   const fidelityPriority =
-    preservationHeavy ||
-    precisionMode ||
-    Boolean(requiresTextAccuracy);
+    shouldPrioritizeImageFidelity({
+      hasSourceImage,
+      taskMode,
+      preservationLevel,
+      requiresTextAccuracy,
+    });
 
   const fastCandidate = {
     model: fastModel,
