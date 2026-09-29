@@ -510,6 +510,7 @@ export class ConversationState extends DurableObject {
       artifactFree: clampScore(caseData.artifactFree),
       textAccuracy: clampScore(caseData.textAccuracy),
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
+      rootReferenceUsed: Boolean(caseData.rootReferenceUsed),
       targets: cleanStringArrayForCase(caseData.targets, 12),
       riskFlags: cleanStringArrayForCase(caseData.riskFlags, 12),
       successCriteria: cleanStringArrayForCase(caseData.successCriteria, 10),
