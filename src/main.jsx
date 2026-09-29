@@ -672,6 +672,7 @@ function App(){
 
       setInput('');
       setAttachment(null);
+      setExtraImageRefs([]);
       setBusy(false);
       return;
     }
@@ -1088,7 +1089,11 @@ function App(){
   const modeLabel={
     chat:'Chat',
     search:'Pesquisa web',
-    image:hasImage||attachment?.kind==='image'?'Imagem • continuidade':'Imagem',
+    image:extraImageRefs.length>0
+      ?'Imagem • '+(extraImageRefs.length+1)+' referências'
+      :hasImage||attachment?.kind==='image'
+        ?'Imagem • continuidade'
+        :'Imagem',
     video:'Vídeo · futuro',
     codex:'Codex · futuro'
   }[mode]||'Chat';
