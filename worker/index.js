@@ -1312,6 +1312,7 @@ function resolveAdaptiveImageRoute({
   hasSourceImage,
   taskMode = "create",
   preservationLevel = "medium",
+  requiresTextAccuracy = false,
   learningContext,
   env,
 }) {
@@ -1351,34 +1352,42 @@ function resolveAdaptiveImageRoute({
             ? 0.83
             : 0.76;
 
+  const fidelityPriority =
+    preservationHeavy ||
+    precisionMode ||
+    Boolean(requiresTextAccuracy);
+
+  const fastCandidate = {
+    model: fastModel,
+    provider: "cloudflare",
+    label: "fast",
+    baseScore: fidelityPriority
+      ? Math.min(fastBase, 0.77)
+      : fastBase,
+    costTier: 0,
+    quality: "fast",
+  };
+
+  const qualityCandidate = {
+    model: qualityModel,
+    provider: "cloudflare",
+    label: "quality",
+    baseScore: fidelityPriority
+      ? Math.max(qualityBase, 0.9)
+      : qualityBase,
+    costTier: 1,
+    quality: "quality",
+  };
+
   const candidates = explicitQuality
     ? [{
-        model: qualityModel,
-        provider: "cloudflare",
-        label: "quality",
-        baseScore: 0.92,
-        costTier: 1,
+        ...qualityCandidate,
+        baseScore: 0.94,
         allowExploration: false,
-        quality: "quality",
       }]
-    : [
-        {
-          model: fastModel,
-          provider: "cloudflare",
-          label: "fast",
-          baseScore: fastBase,
-          costTier: 0,
-          quality: "fast",
-        },
-        {
-          model: qualityModel,
-          provider: "cloudflare",
-          label: "quality",
-          baseScore: qualityBase,
-          costTier: 1,
-          quality: "quality",
-        },
-      ];
+    : fidelityPriority
+      ? [qualityCandidate, fastCandidate]
+      : [fastCandidate, qualityCandidate];
 
   const decision = rankAdaptiveCandidates(
     candidates,
@@ -3381,6 +3390,7 @@ async function handleImage(request, env) {
     hasSourceImage: Boolean(sourceImage),
     taskMode: taskPlan.mode,
     preservationLevel: taskPlan.preservationLevel,
+    requiresTextAccuracy: taskPlan.requiresTextAccuracy,
     learningContext: modeAwareImageLearningContext,
     env,
   });
