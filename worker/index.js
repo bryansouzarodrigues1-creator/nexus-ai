@@ -3413,6 +3413,18 @@ async function handleImage(request, env) {
   const extraReferenceImages =
     requestedExtraReferenceImages.slice(0, referenceSlots.extraCount);
   const extraReferencesUsed = extraReferenceImages.length;
+  const requestedAutoApprovedReferenceCount = Math.max(
+    0,
+    Math.min(3, Number(body.autoApprovedReferenceCount || 0))
+  );
+  const autoApprovedReferencesUsed = Math.min(
+    extraReferencesUsed,
+    requestedAutoApprovedReferenceCount
+  );
+  const manualExtraReferencesUsed = Math.max(
+    0,
+    extraReferencesUsed - autoApprovedReferencesUsed
+  );
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
     .slice(0, 6000);
@@ -3555,19 +3567,31 @@ async function handleImage(request, env) {
     sourceImage && extraReferencesUsed > 0
       ? [
           continuityPrompt,
-          "SUPPLEMENTARY USER REFERENCES:",
-          ...extraReferenceImages.map(
-            (_, index) =>
-              "User supplementary reference " +
-              (index + 1) +
-              " is Image " +
-              (supplementaryStartIndex + index) +
-              "."
-          ),
-          "Use supplementary references only for visual attributes the user request actually calls for, such as clothing, object design, material, color, hairstyle or style.",
+          "SUPPLEMENTARY REFERENCES:",
+          ...extraReferenceImages.map((_, index) => {
+            const imageIndex = supplementaryStartIndex + index;
+            const isAutoApproved =
+              index >= manualExtraReferencesUsed;
+
+            return isAutoApproved
+              ? (
+                  "Image " + imageIndex +
+                  " is a PREVIOUS OUTPUT FROM THIS SAME VISUAL CHAIN that the user explicitly approved."
+                )
+              : (
+                  "Image " + imageIndex +
+                  " is a supplementary reference manually supplied by the user for this request."
+                );
+          }),
+          manualExtraReferencesUsed > 0
+            ? "Manual supplementary references may define requested clothing, object design, material, color, hairstyle, style or other attributes explicitly requested now."
+            : "",
+          autoApprovedReferencesUsed > 0
+            ? "User-approved prior outputs are continuity evidence only: use them to reinforce stable identity, facial traits, body proportions and established style. Never copy stale pose, clothing, background or edit state when those conflict with Image 0 or the current request."
+            : "",
           "Do not merge unrelated identities, faces, people or scene elements from supplementary references unless explicitly requested.",
-          "Image 0 remains the current working image.",
-        ].join(" ")
+          "Image 0 remains authoritative for the latest valid state and the current requested edit.",
+        ].filter(Boolean).join(" ")
       : continuityPrompt;
 
   let cloudflareImageError = null;
@@ -3939,6 +3963,7 @@ async function handleImage(request, env) {
           retries: best.retryCount,
           rootReferenceUsed: hasRootReference,
           extraReferencesUsed,
+          autoApprovedReferencesUsed,
           targets: taskPlan.targets || [],
           riskFlags: taskPlan.riskFlags || [],
           successCriteria: taskPlan.successCriteria,
@@ -3963,6 +3988,8 @@ async function handleImage(request, env) {
                 hasRootReference ? "1" : "0",
               "X-Nexus-Extra-References":
                 String(extraReferencesUsed),
+              "X-Nexus-Auto-Approved-References":
+                String(autoApprovedReferencesUsed),
               "X-Nexus-Provider": "cloudflare",
               "X-Nexus-Model":
                 best.generated.model,
@@ -4260,6 +4287,7 @@ async function handleImage(request, env) {
           taskPlan.preservationLevel,
         "X-Nexus-Root-Reference": "0",
         "X-Nexus-Extra-References": "0",
+        "X-Nexus-Auto-Approved-References": "0",
         "X-Nexus-Provider":
           "huggingface",
         "X-Nexus-Model": model,
