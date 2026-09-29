@@ -1,8 +1,79 @@
-# NEXUS AI v2.7
+# NEXUS AI v2.7.2
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## Image Fidelity & Multi-Reference V2.7.2
+
+A V2.7.2 aprofunda o foco da NEXUS em imagem com preservação, contexto e referências múltiplas.
+
+### Roteamento de alta fidelidade
+
+Tarefas visuais sensíveis passam a usar o FLUX 2 Klein 9B como rota-base, mesmo quando o usuário não escreve explicitamente "qualidade máxima", quando houver:
+
+- `strict_edit`;
+- `enhance`;
+- `identity_lock`;
+- preservação `high` ou `maximum`;
+- necessidade de texto exato.
+
+O modelo 4B continua disponível como fallback/alternativa. O Adaptive Router só deve rebaixar a rota-base quando houver evidência histórica suficiente.
+
+A regra está isolada em `worker/image-routing-policy.js` e possui teste de regressão.
+
+### Referências múltiplas
+
+No modo Imagem, o frontend aceita seleção de várias imagens.
+
+A composição de referências respeita o limite máximo de quatro entradas:
+
+```text
+imagem 0 = referência principal / estado atual
+imagem 1 = referência raiz, quando a cadeia já possui uma
+imagens restantes = referências suplementares do usuário
+máximo total = 4
+```
+
+Quando existe âncora raiz, sobram até duas referências extras. Sem âncora raiz, podem ser usadas até três referências extras.
+
+As referências suplementares servem para atributos pedidos explicitamente, por exemplo roupa, objeto, material, cor, cabelo ou estilo. O prompt interno instrui o modelo a não misturar identidades, pessoas ou cenários sem solicitação.
+
+A política de slots está em `worker/image-reference-policy.js` e é coberta por teste de regressão.
+
+Headers:
+- `X-Nexus-Root-Reference: 1|0`
+- `X-Nexus-Extra-References: N`
+
+A interface mostra a imagem principal e chips das referências extras antes do envio, e informa quantas referências foram realmente usadas.
+
+### Contexto isolado por cadeia visual
+
+Cada sequência visual possui `imageChainId`.
+
+O Image Planner recebe somente o histórico da cadeia ativa, evitando que roupas, personagens, cenários ou estilos de uma imagem antiga contaminem uma nova geração.
+
+Pedidos explícitos como "do zero" iniciam uma nova cadeia. Edições e follow-ups curtos podem continuar a cadeia anterior.
+
+A lógica fica em `src/image-context.js` com testes de regressão.
+
+### Enhance em resolução maior
+
+No modo `enhance` com qualidade alta, a NEXUS pode usar até 1920 px no maior lado da saída, preservando a proporção original.
+
+Outras tarefas em qualidade alta permanecem limitadas a 1536 px no maior lado para equilibrar custo e qualidade.
+
+### Learning Loop visual
+
+Image Case Memory agora registra também:
+- uso da referência raiz;
+- quantidade de referências suplementares;
+- scores do Visual Verifier;
+- modelo/provider;
+- retries;
+- feedback explícito positivo/negativo.
+
+O painel de aprendizado mostra contadores de casos visuais, âncoras raiz e casos multi-reference. Isso permite comparar, com uso real, quando referências extras melhoram ou pioram fidelidade.
 
 ## Visual Continuity V2.7
 
