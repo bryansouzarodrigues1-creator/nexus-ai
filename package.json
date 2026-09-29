@@ -1,11 +1,11 @@
 {
   "name": "nexus-ai",
   "private": true,
-  "version": "2.7.0",
+  "version": "2.6.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js",
+    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js && node src/image-context.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },
