@@ -1,8 +1,37 @@
-# NEXUS AI v2.6
+# NEXUS AI v2.7
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## Visual Continuity V2.7
+
+A V2.7 reduz **drift acumulado** em sequências de edição.
+
+Quando uma imagem é editada várias vezes, a NEXUS agora mantém uma linhagem visual local no frontend:
+
+- **imagem 0** = estado visual mais recente, que recebe a nova edição;
+- **imagem 1** = referência raiz/original da cadeia, usada como âncora de continuidade.
+
+Nos modelos FLUX.2 do Workers AI, as duas referências são enviadas juntas via multipart quando a cadeia já possui uma raiz distinta da imagem atual.
+
+A referência raiz serve para preservar:
+- identidade visual;
+- estrutura facial;
+- proporções corporais;
+- traços estáveis;
+- estilo e elementos definidores não editados.
+
+Ela **não** deve desfazer edições intencionais já presentes na imagem atual.
+
+O Visual Verifier V2 também recebe a referência raiz quando disponível. Assim, além de comparar a edição com o estado imediatamente anterior, ele pode penalizar drift acumulado em relação ao início da cadeia.
+
+A referência raiz fica no IndexedDB do navegador junto com a mídia da conversa; o backend recebe somente a cópia necessária para a geração atual. Se a raiz local não estiver mais disponível, a NEXUS degrada graciosamente para edição com uma única referência.
+
+Headers adicionais:
+- `X-Nexus-Root-Reference: 1|0`
+
+A interface mostra `🔒 âncora raiz` quando a geração realmente utilizou a segunda referência.
 
 ## Arquitetura
 
