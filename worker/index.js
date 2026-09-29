@@ -281,6 +281,9 @@ function formatImageCaseContext(context) {
       item?.artifactFree == null
         ? ""
         : "artefatos=" + Math.round(Number(item.artifactFree) * 100) + "%",
+      item?.qualityGateScore == null
+        ? ""
+        : "gate=" + Math.round(Number(item.qualityGateScore) * 100) + "%",
       Number.isFinite(Number(item?.semanticSimilarity))
         ? "similaridade=" +
           Math.round(Number(item.semanticSimilarity) * 100) +
@@ -308,6 +311,9 @@ function formatImageCaseContext(context) {
         : "",
       Array.isArray(item?.issues) && item.issues.length
         ? "problemas=" + item.issues.join("; ")
+        : "",
+      Array.isArray(item?.qualityGateBlockers) && item.qualityGateBlockers.length
+        ? "bloqueadores=" + item.qualityGateBlockers.join("; ")
         : "",
       Array.isArray(item?.unwantedChanges) && item.unwantedChanges.length
         ? "mudanças indesejadas=" + item.unwantedChanges.join("; ")
@@ -4534,6 +4540,14 @@ async function handleImage(request, env) {
             best.verification?.requestFulfillment,
           artifactFree: best.verification?.artifactFree,
           textAccuracy: best.verification?.textAccuracy,
+          qualityGateScore:
+            best.verification?.qualityGateScore,
+          qualityGatePass:
+            best.verification?.qualityGate?.verified
+              ? Boolean(best.verification.qualityGate.pass)
+              : null,
+          qualityGateBlockers:
+            best.verification?.qualityGateBlockers || [],
           deterministicTextAccuracy:
             best.verification?.deterministicTextAccuracy,
           exactTextMatches:
@@ -4939,6 +4953,14 @@ async function handleImage(request, env) {
         fallbackVerification.requestFulfillment,
       artifactFree: fallbackVerification.artifactFree,
       textAccuracy: fallbackVerification.textAccuracy,
+      qualityGateScore:
+        fallbackVerification.qualityGateScore,
+      qualityGatePass:
+        fallbackVerification?.qualityGate?.verified
+          ? Boolean(fallbackVerification.qualityGate.pass)
+          : null,
+      qualityGateBlockers:
+        fallbackVerification.qualityGateBlockers || [],
       deterministicTextAccuracy:
         fallbackVerification.deterministicTextAccuracy,
       exactTextMatches:
