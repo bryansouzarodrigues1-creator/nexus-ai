@@ -4094,6 +4094,7 @@ async function handleImage(request, env) {
       quality === "quality"
         ? ["quality", "fast"]
         : ["fast"];
+    let bestRejectedAcrossRoutes = null;
 
     for (const imageQuality of qualities) {
       try {
@@ -4371,14 +4372,51 @@ async function handleImage(request, env) {
           if (best.verification?.pass) break;
         }
 
+        let finalImageQuality = imageQuality;
+        let finalOutputSize = outputSize;
+        let candidateArenaUsed = false;
+
         if (
-          quality === "quality" &&
-          imageQuality === "quality" &&
           best.verification?.verified &&
-          !best.verification?.pass &&
-          best.candidateScore < 0.6
+          !best.verification?.pass
         ) {
-          continue;
+          const hadPriorRejected =
+            Boolean(bestRejectedAcrossRoutes);
+          const candidateSnapshot = {
+            best,
+            imageQuality,
+            outputSize,
+          };
+
+          if (
+            !bestRejectedAcrossRoutes ||
+            best.candidateScore >
+              bestRejectedAcrossRoutes.best.candidateScore
+          ) {
+            bestRejectedAcrossRoutes =
+              candidateSnapshot;
+          }
+
+          if (
+            imageQuality === "quality" &&
+            qualities.includes("fast")
+          ) {
+            continue;
+          }
+
+          if (
+            imageQuality === "fast" &&
+            bestRejectedAcrossRoutes
+          ) {
+            candidateArenaUsed =
+              hadPriorRejected;
+            best =
+              bestRejectedAcrossRoutes.best;
+            finalImageQuality =
+              bestRejectedAcrossRoutes.imageQuality;
+            finalOutputSize =
+              bestRejectedAcrossRoutes.outputSize;
+          }
         }
 
         const finalMode =
@@ -4399,7 +4437,7 @@ async function handleImage(request, env) {
               content: prompt,
               meta: {
                 model: best.generated.model,
-                quality: imageQuality,
+                quality: finalImageQuality,
                 imageTask: finalMode,
                 preservationLevel:
                   taskPlan.preservationLevel,
@@ -4427,6 +4465,9 @@ async function handleImage(request, env) {
                   best.retryStrategy?.retryClass || "",
                 retryEditStrength:
                   best.retryStrategy?.editStrength ?? null,
+                candidateArenaUsed,
+                selectedImageQuality:
+                  finalImageQuality,
                 qualityGatePass:
                   best.verification?.qualityGate?.verified
                     ? Boolean(best.verification.qualityGate.pass)
@@ -4435,7 +4476,7 @@ async function handleImage(request, env) {
                   best.verification?.qualityGateScore ?? null,
                 qualityGateBlockers:
                   best.verification?.qualityGateBlockers || [],
-                outputSize,
+                outputSize: finalOutputSize,
                 adaptiveRouter:
                   imageRoute.adaptiveDecision || null,
               },
@@ -4480,7 +4521,7 @@ async function handleImage(request, env) {
                   best.verification?.qualityGateScore ?? null,
                 qualityGateBlockers:
                   best.verification?.qualityGateBlockers || [],
-                outputSize,
+                outputSize: finalOutputSize,
                 adaptiveRouter:
                   imageRoute.adaptiveDecision || null,
               },
@@ -4619,12 +4660,12 @@ async function handleImage(request, env) {
               "X-Nexus-Model":
                 best.generated.model,
               "X-Nexus-Image-Width":
-                String(outputSize.width),
+                String(finalOutputSize.width),
               "X-Nexus-Image-Height":
-                String(outputSize.height),
+                String(finalOutputSize.height),
               "X-Nexus-Quality-Fallback":
                 quality === "quality" &&
-                imageQuality === "fast"
+                finalImageQuality === "fast"
                   ? "1"
                   : "0",
               "X-Nexus-Prompt-Expanded":
@@ -4721,6 +4762,10 @@ async function handleImage(request, env) {
                 Array.isArray(best.verification?.qualityGateBlockers)
                   ? best.verification.qualityGateBlockers.join(",").slice(0, 300)
                   : "",
+              "X-Nexus-Candidate-Arena":
+                candidateArenaUsed ? "1" : "0",
+              "X-Nexus-Selected-Quality":
+                finalImageQuality,
               "X-Nexus-Visual-Retry":
                 String(best.retryCount || 0),
               "X-Nexus-Adaptive-Router":
