@@ -366,6 +366,10 @@ function App(){
         referenceLeakageRisk:Number.isFinite(message?.referenceLeakageRisk)?message.referenceLeakageRisk:null,
         qualityGateState:message?.qualityGateState||null,
         qualityGateScore:Number.isFinite(message?.qualityGateScore)?message.qualityGateScore:null,
+        candidateArenaUsed:Boolean(message?.candidateArenaUsed),
+        selectedImageQuality:message?.selectedImageQuality||null,
+        retryClass:message?.retryClass||null,
+        retryEditStrength:Number.isFinite(message?.retryEditStrength)?message.retryEditStrength:null,
         retries:Number(message?.visualRetry||message?.videoFallbacks||0),
         adaptiveRouter:message?.adaptiveRouter||null,
         rootReferenceUsed:Boolean(message?.rootReferenceUsed),
@@ -929,6 +933,11 @@ function App(){
         const qualityGateBlockers=qualityGateBlockersRaw
           ?qualityGateBlockersRaw.split(',').map(x=>x.trim()).filter(Boolean)
           :[];
+        const candidateArenaUsed=res.headers.get('x-nexus-candidate-arena')==='1';
+        const selectedImageQuality=res.headers.get('x-nexus-selected-quality')||'';
+        const retryClass=res.headers.get('x-nexus-retry-class')||'';
+        const retryEditStrengthRaw=res.headers.get('x-nexus-retry-edit-strength');
+        const retryEditStrength=retryEditStrengthRaw!==null&&retryEditStrengthRaw!==''?Number(retryEditStrengthRaw):null;
         const adaptiveUsed=res.headers.get('x-nexus-adaptive-router')==='1';
         const adaptiveScoreRaw=res.headers.get('x-nexus-adaptive-score');
         const adaptiveConfidenceRaw=res.headers.get('x-nexus-adaptive-confidence');
@@ -983,6 +992,10 @@ function App(){
           qualityGateState,
           qualityGateScore,
           qualityGateBlockers,
+          candidateArenaUsed,
+          selectedImageQuality,
+          retryClass,
+          retryEditStrength,
           imageWidth,
           imageHeight,
           visualRootKey:inheritedRootKey||media.key||null,
@@ -1335,7 +1348,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{Number.isFinite(m.exactTextTotal)&&m.exactTextTotal>0?' · texto exato '+(m.exactTextMatches??0)+'/'+m.exactTextTotal:''}{Number.isFinite(m.referenceScore)?' · referência '+Math.round(m.referenceScore*100)+'%':''}{Number.isFinite(m.referenceLeakageRisk)?' · vazamento '+Math.round(m.referenceLeakageRisk*100)+'%':''}{m.qualityGateState==='pass'?' · ✅ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'OK'):m.qualityGateState==='fail'?' · ⚠ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'falhou'):''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{Number.isFinite(m.exactTextTotal)&&m.exactTextTotal>0?' · texto exato '+(m.exactTextMatches??0)+'/'+m.exactTextTotal:''}{Number.isFinite(m.referenceScore)?' · referência '+Math.round(m.referenceScore*100)+'%':''}{Number.isFinite(m.referenceLeakageRisk)?' · vazamento '+Math.round(m.referenceLeakageRisk*100)+'%':''}{m.qualityGateState==='pass'?' · ✅ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'OK'):m.qualityGateState==='fail'?' · ⚠ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'falhou'):''}{m.candidateArenaUsed?' · 🥊 arena visual':''}{m.selectedImageQuality?' · selecionado '+m.selectedImageQuality:''}{m.retryClass?' · retry '+m.retryClass:''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
