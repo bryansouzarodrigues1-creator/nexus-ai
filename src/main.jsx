@@ -223,6 +223,7 @@ function App(){
   const [menu,setMenu]=useState(false);
   const [status,setStatus]=useState(null);
   const [attachment,setAttachment]=useState(null);
+  const [extraImageRefs,setExtraImageRefs]=useState([]);
   const [learningOpen,setLearningOpen]=useState(false);
   const [learningStatus,setLearningStatus]=useState(null);
   const [learningBusy,setLearningBusy]=useState(false);
@@ -309,6 +310,7 @@ function App(){
     setThreads(p=>[t,...p]);
     setActive(t.id);
     setAttachment(null);
+    setExtraImageRefs([]);
     setMenu(false);
   }
 
@@ -517,33 +519,91 @@ function App(){
   }
 
   async function onFileSelected(e){
-    const file=e.target.files?.[0];
+    const files=Array.from(e.target.files||[]);
     e.target.value='';
-    if(!file)return;
+    if(!files.length)return;
 
     const maxImage=5*1024*1024;
     const maxText=2*1024*1024;
     const maxDocument=4*1024*1024;
 
     try{
-      if(file.type.startsWith('image/')){
-        if(file.size>maxImage){window.alert('Use uma imagem de até 5 MB.');return}
-        const dataUrl=await fileToDataUrl(file);
-        setAttachment({kind:'image',name:file.name,dataUrl,file,mime:file.type});
+      if(
+        mode==='image' &&
+        files.length>1 &&
+        files.every(file=>file.type.startsWith('image/'))
+      ){
+        const selected=files.slice(0,4);
+        if(selected.some(file=>file.size>maxImage)){
+          window.alert('Use imagens de até 5 MB cada.');
+          return;
+        }
+
+        const refs=await Promise.all(
+          selected.map(async file=>({
+            kind:'image',
+            name:file.name,
+            dataUrl:await fileToDataUrl(file),
+            file,
+            mime:file.type
+          }))
+        );
+
+        setAttachment(refs[0]||null);
+        setExtraImageRefs(refs.slice(1));
         return;
       }
 
-      if(isRichDocument(file)){
-        if(file.size>maxDocument){window.alert('Use um documento de até 4 MB.');return}
+      const file=files[0];
+
+      if(file.type.startsWith('image/')){
+        if(file.size>maxImage){
+          window.alert('Use uma imagem de até 5 MB.');
+          return;
+        }
         const dataUrl=await fileToDataUrl(file);
-        setAttachment({kind:'document',name:file.name,dataUrl,file,mime:file.type});
+        setAttachment({
+          kind:'image',
+          name:file.name,
+          dataUrl,
+          file,
+          mime:file.type
+        });
+        setExtraImageRefs([]);
+        return;
+      }
+
+      setExtraImageRefs([]);
+
+      if(isRichDocument(file)){
+        if(file.size>maxDocument){
+          window.alert('Use um documento de até 4 MB.');
+          return;
+        }
+        const dataUrl=await fileToDataUrl(file);
+        setAttachment({
+          kind:'document',
+          name:file.name,
+          dataUrl,
+          file,
+          mime:file.type
+        });
         setMode('chat');
         return;
       }
 
-      if(file.size>maxText){window.alert('Use um arquivo de texto de até 2 MB.');return}
+      if(file.size>maxText){
+        window.alert('Use um arquivo de texto de até 2 MB.');
+        return;
+      }
       const text=await fileToText(file);
-      setAttachment({kind:'text',name:file.name,text:text.slice(0,100000),file,mime:file.type});
+      setAttachment({
+        kind:'text',
+        name:file.name,
+        text:text.slice(0,100000),
+        file,
+        mime:file.type
+      });
       setMode('chat');
     }catch{
       window.alert('Não consegui ler esse arquivo.');
@@ -617,6 +677,7 @@ function App(){
     }
 
     const activeAttachment=attachment;
+    const activeExtraImageRefs=extraImageRefs;
     const attachedMedia=await prepareAttachmentMedia(activeAttachment);
 
     const user={
@@ -637,6 +698,7 @@ function App(){
 
     setInput('');
     setAttachment(null);
+    setExtraImageRefs([]);
     setBusy(true);
 
     try{
@@ -700,6 +762,14 @@ function App(){
           ?await shrinkImageDataUrl(sourceImageRaw,500)
           :null;
 
+        const extraReferenceImages=(
+          await Promise.all(
+            (activeExtraImageRefs||[])
+              .slice(0,3)
+              .map(ref=>shrinkImageDataUrl(ref.dataUrl,500))
+          )
+        ).filter(Boolean);
+
         const priorImagePrompts=(currentThread?.messages||[])
           .filter(m=>m.role==='user'&&m.mode==='image');
 
@@ -737,6 +807,7 @@ function App(){
             prompt:effectiveText,
             sourceImage,
             rootReferenceImage,
+            extraReferenceImages,
             previousPrompt,
             history:imageScopedHistory,
             sessionId:tid,
@@ -770,6 +841,7 @@ function App(){
         const imageCaseId=res.headers.get('x-nexus-image-case-id')||'';
         const preservationLevel=res.headers.get('x-nexus-preservation')||'';
         const rootReferenceUsed=res.headers.get('x-nexus-root-reference')==='1';
+        const extraReferencesUsed=Number(res.headers.get('x-nexus-extra-references')||0);
         const identityScoreRaw=res.headers.get('x-nexus-identity-score');
         const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
         const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
@@ -829,6 +901,7 @@ function App(){
           imageHeight,
           visualRootKey:inheritedRootKey||media.key||null,
           rootReferenceUsed,
+          extraReferencesUsed,
           adaptiveRouter,
           imageChainId,
           generationMode:imageMode
@@ -1025,6 +1098,7 @@ function App(){
       ref={fileRef}
       className="hidden-file"
       type="file"
+      multiple
       accept="image/*,.pdf,.docx,.xlsx,.xlsm,.xlsb,.xls,.ods,.odt,.numbers,.txt,.md,.json,.csv,.js,.jsx,.ts,.tsx,.html,.htm,.css,.py,.xml,.yaml,.yml,.log"
       onChange={onFileSelected}
     />
@@ -1169,7 +1243,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
@@ -1196,12 +1270,34 @@ function App(){
 
       {mode!=='video'&&mode!=='codex'&&<div className="composer-wrap">
         <div className="composer">
-          {attachment&&<div className="attachment-chip">
-            {attachment.kind==='image'
-              ?<img src={attachment.dataUrl} alt="Anexo"/>
-              :<FileText size={18}/>}
-            <span>{attachment.name}</span>
-            <button onClick={()=>setAttachment(null)} title="Remover"><X size={15}/></button>
+          {(attachment||extraImageRefs.length>0)&&<div className="attachment-stack">
+            {attachment&&<div className="attachment-chip">
+              {attachment.kind==='image'
+                ?<img src={attachment.dataUrl} alt="Anexo principal"/>
+                :<FileText size={18}/>}
+              <span>{attachment.name}</span>
+              {attachment.kind==='image'&&extraImageRefs.length>0&&<small>principal</small>}
+              <button
+                onClick={()=>{
+                  if(extraImageRefs.length){
+                    setAttachment(extraImageRefs[0]);
+                    setExtraImageRefs(p=>p.slice(1));
+                  }else{
+                    setAttachment(null);
+                  }
+                }}
+                title="Remover"
+              ><X size={15}/></button>
+            </div>}
+            {extraImageRefs.map((ref,index)=><div className="attachment-chip reference-chip" key={ref.name+'-'+index}>
+              <img src={ref.dataUrl} alt={'Referência '+(index+1)}/>
+              <span>{ref.name}</span>
+              <small>ref {index+1}</small>
+              <button
+                onClick={()=>setExtraImageRefs(p=>p.filter((_,i)=>i!==index))}
+                title="Remover referência"
+              ><X size={15}/></button>
+            </div>)}
           </div>}
           <textarea
             value={input}
@@ -1212,7 +1308,7 @@ function App(){
           />
           <div className="composebar">
             <div>
-              <button title="Anexar arquivo ou imagem" onClick={()=>fileRef.current?.click()}><Paperclip size={19}/></button>
+              <button title={mode==='image'?'Anexar até 4 imagens de referência':'Anexar arquivo ou imagem'} onClick={()=>fileRef.current?.click()}><Paperclip size={19}/></button>
               <span>{modeLabel}</span>
             </div>
             <button className="send" disabled={(!input.trim()&&!attachment)||busy} onClick={send}><Send size={18}/></button>
