@@ -4,6 +4,10 @@ import {
   compactAdaptiveDecision,
   rankAdaptiveCandidates,
 } from "./adaptive-router.js";
+import {
+  extractExactRequestedText,
+  inferNaturalAspectRatio,
+} from "./image-task-core.js";
 export { ConversationState } from "./conversation-state.js";
 export { NexusAgentWorkflow } from "./agent-workflow.js";
 
@@ -1806,26 +1810,11 @@ function imageTaskFallback(prompt, hasSourceImage) {
               ? 0.6
               : 0.75;
 
-  const aspectRatioMatch =
-    text.match(/\b(1:1|16:9|9:16|4:5|5:4|3:2|2:3)\b/);
-
   const naturalAspectRatio =
-    /\b(story|stories|reels?|tiktok|vertical|9x16)\b/i.test(text)
-      ? "9:16"
-      : /\b(youtube|thumbnail|miniatura|banner|widescreen|paisagem|horizontal)\b/i.test(text)
-        ? "16:9"
-        : /\b(feed|instagram|post vertical|4x5)\b/i.test(text)
-          ? "4:5"
-          : /\b(avatar|perfil|quadrad[oa]|square)\b/i.test(text)
-            ? "1:1"
-            : null;
+    inferNaturalAspectRatio(prompt, null);
 
-  const requestedText = [
-    ...String(prompt || "").matchAll(/[“"']([^“”"'\n]{1,180})[”"']/g),
-  ]
-    .map((match) => String(match?.[1] || "").trim())
-    .filter(Boolean)
-    .slice(0, 8);
+  const requestedText =
+    extractExactRequestedText(prompt, 8);
 
   return {
     mode,
@@ -1848,7 +1837,6 @@ function imageTaskFallback(prompt, hasSourceImage) {
       ? ["identity drift", "composition drift", "unrequested changes"]
       : [],
     aspectRatio:
-      aspectRatioMatch?.[1] ||
       naturalAspectRatio ||
       (poster ? "4:5" : "1:1"),
   };
