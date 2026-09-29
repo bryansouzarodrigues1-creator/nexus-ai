@@ -81,3 +81,73 @@ export function selectImageChainHistory(
 
   return [];
 }
+
+
+export function selectApprovedChainReferenceKeys(
+  messages,
+  imageChainId,
+  options = {}
+) {
+  const items = Array.isArray(messages) ? messages : [];
+  const chainId = String(imageChainId || "");
+  if (!chainId) return [];
+
+  const limit = Math.max(
+    0,
+    Math.min(3, Number(options.limit ?? 2))
+  );
+  if (!limit) return [];
+
+  const excluded = new Set(
+    (Array.isArray(options.excludeKeys) ? options.excludeKeys : [])
+      .map((value) => String(value || ""))
+      .filter(Boolean)
+  );
+
+  const seen = new Set();
+  const candidates = [];
+
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (
+      item?.role !== "assistant" ||
+      String(item?.imageChainId || "") !== chainId ||
+      item?.media?.type !== "image" ||
+      item?.feedback !== "positive"
+    ) {
+      continue;
+    }
+
+    const key = String(item?.media?.key || "");
+    if (!key || excluded.has(key) || seen.has(key)) continue;
+    seen.add(key);
+
+    const visualScore = Number.isFinite(Number(item?.visualScore))
+      ? Number(item.visualScore)
+      : 0.75;
+    const identityScore = Number.isFinite(Number(item?.identityScore))
+      ? Number(item.identityScore)
+      : 0.75;
+    const fulfillmentScore = Number.isFinite(Number(item?.fulfillmentScore))
+      ? Number(item.fulfillmentScore)
+      : 0.75;
+
+    candidates.push({
+      key,
+      index,
+      quality:
+        visualScore * 0.35 +
+        identityScore * 0.4 +
+        fulfillmentScore * 0.25,
+    });
+  }
+
+  return candidates
+    .sort(
+      (a, b) =>
+        b.quality - a.quality ||
+        b.index - a.index
+    )
+    .slice(0, limit)
+    .map((item) => item.key);
+}
