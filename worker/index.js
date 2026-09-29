@@ -2823,8 +2823,12 @@ function computeImageOutputSize({
   sourceHeight,
   aspectRatio,
   quality,
+  taskMode = "create",
 }) {
-  const maxSide = quality === "quality" ? 1536 : 1024;
+  const maxSide =
+    quality === "quality"
+      ? (taskMode === "enhance" ? 1920 : 1536)
+      : 1024;
 
   let ratio = 1;
   const sw = Number(sourceWidth);
@@ -3584,6 +3588,7 @@ async function handleImage(request, env) {
           sourceHeight: sourceImage ? sourceHeight : 0,
           aspectRatio: taskPlan.aspectRatio,
           quality: imageQuality,
+          taskMode: taskPlan.mode,
         });
 
         let generated = await runCloudflareImage({
