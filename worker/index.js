@@ -245,6 +245,7 @@ function formatImageCaseContext(context) {
   return (
     "CASOS VISUAIS ANTERIORES DO MESMO TIPO:\n" +
     cases
+      .slice(0, 6)
       .map((item, index) => {
         const metrics = [
           item?.score == null ? "" : "score=" + Math.round(Number(item.score) * 100) + "%",
@@ -269,6 +270,123 @@ function formatImageCaseContext(context) {
       })
       .join("\n")
   ).slice(0, 6500);
+}
+
+function buildModeAwareImageStats(genericStats, imageCases) {
+  const generic = Array.isArray(genericStats) ? genericStats : [];
+  const cases = Array.isArray(imageCases) ? imageCases : [];
+  if (!cases.length) return generic;
+
+  const grouped = new Map();
+  for (const item of cases) {
+    const model = String(item?.model || "");
+    const provider = String(item?.provider || "");
+    if (!model) continue;
+    const key = provider + "::" + model;
+    const current = grouped.get(key) || {
+      model,
+      provider,
+      count: 0,
+      pass: 0,
+      scoreSum: 0,
+      scoreCount: 0,
+      identitySum: 0,
+      identityCount: 0,
+      fulfillmentSum: 0,
+      fulfillmentCount: 0,
+    };
+    current.count += 1;
+    if (item?.pass) current.pass += 1;
+    if (Number.isFinite(Number(item?.score))) {
+      current.scoreSum += Number(item.score);
+      current.scoreCount += 1;
+    }
+    if (Number.isFinite(Number(item?.identity))) {
+      current.identitySum += Number(item.identity);
+      current.identityCount += 1;
+    }
+    if (Number.isFinite(Number(item?.requestFulfillment))) {
+      current.fulfillmentSum += Number(item.requestFulfillment);
+      current.fulfillmentCount += 1;
+    }
+    grouped.set(key, current);
+  }
+
+  const byKey = new Map(
+    generic.map((item) => [
+      String(item?.provider || "") + "::" + String(item?.model || ""),
+      { ...item },
+    ])
+  );
+
+  for (const [key, modeStat] of grouped.entries()) {
+    const base = byKey.get(key) || {
+      kind: "image",
+      provider: modeStat.provider,
+      model: modeStat.model,
+      count: 0,
+      outcomeCount: 0,
+      success: 0,
+      operationalFailures: 0,
+      qualityFailures: 0,
+      positive: 0,
+      negative: 0,
+      scoreCount: 0,
+      avgScore: 0,
+      avgLatencyMs: 0,
+      retries: 0,
+    };
+
+    const genericScoreCount = Math.min(4, Number(base.scoreCount || 0));
+    const genericAvg = Number(base.avgScore || 0.74);
+    const modeAvg =
+      modeStat.scoreCount > 0
+        ? modeStat.scoreSum / modeStat.scoreCount
+        : genericAvg;
+    const weightedDenominator =
+      modeStat.scoreCount * 2 + genericScoreCount;
+
+    const identityAvg =
+      modeStat.identityCount > 0
+        ? modeStat.identitySum / modeStat.identityCount
+        : null;
+    const fulfillmentAvg =
+      modeStat.fulfillmentCount > 0
+        ? modeStat.fulfillmentSum / modeStat.fulfillmentCount
+        : null;
+
+    const qualitySignalParts = [
+      modeAvg,
+      identityAvg,
+      fulfillmentAvg,
+    ].filter((value) => Number.isFinite(value));
+    const modeQuality =
+      qualitySignalParts.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, qualitySignalParts.length);
+
+    byKey.set(key, {
+      ...base,
+      kind: "image",
+      count: Number(base.count || 0) + modeStat.count,
+      outcomeCount: modeStat.count,
+      success: modeStat.count,
+      operationalFailures: Number(base.operationalFailures || 0),
+      qualityFailures:
+        modeStat.count - modeStat.pass,
+      scoreCount:
+        modeStat.scoreCount * 2 + genericScoreCount,
+      avgScore:
+        weightedDenominator > 0
+          ? (
+              modeQuality * modeStat.scoreCount * 2 +
+              genericAvg * genericScoreCount
+            ) / weightedDenominator
+          : genericAvg,
+      modeSpecificEvidence: modeStat.count,
+    });
+  }
+
+  return [...byKey.values()];
 }
 
 async function recordGlobalImageCase(env, caseData = {}) {
@@ -716,6 +834,7 @@ async function handleStatus(env) {
         aspectRatioPreservation: true,
         visualLearning: true,
         imageCaseMemory: true,
+        taskAwareImageRouting: true,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
@@ -1121,6 +1240,8 @@ function resolveAdaptiveChatRoute(route, learningContext, env) {
 function resolveAdaptiveImageRoute({
   requestedQuality,
   hasSourceImage,
+  taskMode = "create",
+  preservationLevel = "medium",
   learningContext,
   env,
 }) {
@@ -1132,12 +1253,40 @@ function resolveAdaptiveImageRoute({
     CF_IMAGE_QUALITY_MODEL;
 
   const explicitQuality = requestedQuality === "quality";
+  const preservationHeavy =
+    hasSourceImage &&
+    ["high", "maximum"].includes(preservationLevel);
+  const precisionMode =
+    ["strict_edit", "enhance", "identity_lock"].includes(taskMode);
+  const structuralMode =
+    ["remove_replace", "background"].includes(taskMode);
+
+  const fastBase =
+    precisionMode
+      ? 0.78
+      : structuralMode
+        ? 0.79
+        : hasSourceImage
+          ? 0.8
+          : 0.82;
+
+  const qualityBase =
+    precisionMode
+      ? 0.88
+      : structuralMode
+        ? 0.85
+        : taskMode === "poster"
+          ? 0.8
+          : hasSourceImage
+            ? 0.83
+            : 0.76;
+
   const candidates = explicitQuality
     ? [{
         model: qualityModel,
         provider: "cloudflare",
         label: "quality",
-        baseScore: 0.90,
+        baseScore: 0.92,
         costTier: 1,
         allowExploration: false,
         quality: "quality",
@@ -1147,7 +1296,7 @@ function resolveAdaptiveImageRoute({
           model: fastModel,
           provider: "cloudflare",
           label: "fast",
-          baseScore: hasSourceImage ? 0.78 : 0.82,
+          baseScore: fastBase,
           costTier: 0,
           quality: "fast",
         },
@@ -1155,7 +1304,7 @@ function resolveAdaptiveImageRoute({
           model: qualityModel,
           provider: "cloudflare",
           label: "quality",
-          baseScore: hasSourceImage ? 0.76 : 0.70,
+          baseScore: qualityBase,
           costTier: 1,
           quality: "quality",
         },
@@ -1165,11 +1314,22 @@ function resolveAdaptiveImageRoute({
     candidates,
     learningContext?.modelStats || [],
     {
-      economyWeight: 0.05,
-      latencyTargetMs: 8000,
-      minimumEvidenceToOverride: 10,
+      economyWeight:
+        preservationHeavy
+          ? 0.022
+          : taskMode === "poster"
+            ? 0.032
+            : 0.045,
+      latencyTargetMs:
+        preservationHeavy ? 10000 : 8000,
+      minimumEvidenceToOverride: 8,
       explorationWeight: 0.012,
-      priorQuality: hasSourceImage ? 0.76 : 0.74,
+      priorQuality:
+        preservationHeavy
+          ? 0.82
+          : hasSourceImage
+            ? 0.78
+            : 0.75,
     }
   );
 
@@ -3063,10 +3223,22 @@ async function handleImage(request, env) {
     imageCaseContextText,
   ].filter(Boolean).join("\n\n");
 
+  const modeAwareImageStats =
+    buildModeAwareImageStats(
+      imageLearningContext?.modelStats || [],
+      imageCaseContext?.cases || []
+    );
+  const modeAwareImageLearningContext = {
+    ...imageLearningContext,
+    modelStats: modeAwareImageStats,
+  };
+
   const imageRoute = resolveAdaptiveImageRoute({
     requestedQuality,
     hasSourceImage: Boolean(sourceImage),
-    learningContext: imageLearningContext,
+    taskMode: taskPlan.mode,
+    preservationLevel: taskPlan.preservationLevel,
+    learningContext: modeAwareImageLearningContext,
     env,
   });
   const quality = imageRoute.quality;
