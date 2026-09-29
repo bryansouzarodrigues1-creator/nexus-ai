@@ -94,6 +94,20 @@ export function describeImageCaseRelevance(item, {
   const artifactFree = Number.isFinite(Number(item?.artifactFree))
     ? clamp01(item.artifactFree)
     : 0.5;
+  const deterministicTextAccuracy =
+    Number.isFinite(Number(item?.deterministicTextAccuracy))
+      ? clamp01(item.deterministicTextAccuracy)
+      : Number.isFinite(Number(item?.textAccuracy))
+        ? clamp01(item.textAccuracy)
+        : 0.5;
+  const referenceScore =
+    Number.isFinite(Number(item?.referenceScore))
+      ? clamp01(item.referenceScore)
+      : 0.5;
+  const referenceLeakageRisk =
+    Number.isFinite(Number(item?.referenceLeakageRisk))
+      ? clamp01(item.referenceLeakageRisk)
+      : 0;
 
   const ageMs = Math.max(0, Number(now) - Number(item?.at || 0));
   const ageDays = ageMs / 86400000;
@@ -102,13 +116,18 @@ export function describeImageCaseRelevance(item, {
   const retries = Math.max(0, Number(item?.retries || 0));
   const retryPenalty = Math.min(0.12, retries * 0.025);
 
-  const verifierQuality =
-    score * 0.32 +
-    fulfillment * 0.28 +
-    identity * 0.18 +
-    artifactFree * 0.12 +
-    pass * 0.07 +
-    verified * 0.03;
+  const verifierQuality = Math.max(
+    0,
+    score * 0.26 +
+      fulfillment * 0.23 +
+      identity * 0.15 +
+      artifactFree * 0.1 +
+      deterministicTextAccuracy * 0.08 +
+      referenceScore * 0.08 +
+      pass * 0.07 +
+      verified * 0.03 -
+      referenceLeakageRisk * 0.08
+  );
 
   const userSignal = String(item?.userSignal || "neutral");
   const userApproval =
