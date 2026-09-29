@@ -4268,20 +4268,60 @@ async function handleImage(request, env) {
               : "Generate a corrected new image that fixes the listed issues while preserving all parts of the original request that were already correct.",
           ].filter(Boolean).join(" ");
 
-          const retried = await runCloudflareImage({
-            quality: imageQuality,
-            modelOverride: adaptiveModelForAttempt,
-            prompt: retryPrompt,
-            sourceImage,
-            rootReferenceImage:
-              hasRootReference ? rootReferenceImage : null,
-            extraReferenceImages,
-            width: outputSize.width,
-            height: outputSize.height,
-            editStrength:
-              retryStrategy.editStrength,
-            env,
-          });
+          let retried;
+          try {
+            retried = await runCloudflareImage({
+              quality: imageQuality,
+              modelOverride: adaptiveModelForAttempt,
+              prompt: retryPrompt,
+              sourceImage,
+              rootReferenceImage:
+                hasRootReference ? rootReferenceImage : null,
+              extraReferenceImages,
+              width: outputSize.width,
+              height: outputSize.height,
+              editStrength:
+                retryStrategy.editStrength,
+              env,
+            });
+          } catch (retryError) {
+            // A corrective retry is optional. Never discard an already
+            // verified candidate because a later provider call failed.
+            cloudflareImageError =
+              retryError?.message ||
+              String(retryError);
+
+            const retryFailure =
+              classifyAdaptiveFailure(retryError);
+
+            await recordGlobalLearningOutcome(
+              env,
+              {
+                kind: "image",
+                provider: "cloudflare",
+                model:
+                  adaptiveModelForAttempt ||
+                  (
+                    imageQuality === "quality"
+                      ? (
+                          env.CF_IMAGE_QUALITY_MODEL ||
+                          CF_IMAGE_QUALITY_MODEL
+                        )
+                      : (
+                          env.CF_IMAGE_FAST_MODEL ||
+                          CF_IMAGE_FAST_MODEL
+                        )
+                  ),
+                ok: false,
+                failureKind:
+                  retryFailure.kind,
+                latencyMs:
+                  Date.now() - startedAt,
+              }
+            );
+
+            break;
+          }
 
           const retryBlob = new Blob(
             [retried.bytes],
