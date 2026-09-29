@@ -598,3 +598,138 @@ export function applyImageQualityGate(
       String(base.retryInstruction || ""),
   };
 }
+
+
+export function planImageRetryStrategy(
+  verification,
+  taskPlan = {},
+  attemptIndex = 1
+) {
+  const v =
+    verification && typeof verification === "object"
+      ? verification
+      : {};
+  const blockers = new Set(
+    Array.isArray(v.qualityGateBlockers)
+      ? v.qualityGateBlockers
+      : Array.isArray(v.qualityGate?.blockerCodes)
+        ? v.qualityGate.blockerCodes
+        : []
+  );
+
+  const baseStrength = Math.max(
+    0.05,
+    Math.min(
+      0.85,
+      Number.isFinite(Number(taskPlan?.editStrength))
+        ? Number(taskPlan.editStrength)
+        : 0.3
+    )
+  );
+
+  const attempt = Math.max(
+    1,
+    Math.min(4, Math.round(Number(attemptIndex || 1)))
+  );
+
+  const preservationCodes = [
+    "identity",
+    "composition",
+    "background",
+    "style",
+    "reference_leakage",
+  ];
+  const fulfillmentCodes = [
+    "request_fulfillment",
+    "reference_compliance",
+  ];
+
+  const preserveProblem = preservationCodes.some((code) =>
+    blockers.has(code)
+  );
+  const fulfillProblem = fulfillmentCodes.some((code) =>
+    blockers.has(code)
+  );
+  const textProblem =
+    blockers.has("exact_text") ||
+    blockers.has("text_accuracy");
+  const artifactProblem =
+    blockers.has("artifacts");
+
+  let delta = 0;
+  let retryClass = "balanced";
+
+  if (preserveProblem && !fulfillProblem) {
+    delta = -0.055 * attempt;
+    retryClass = "preserve";
+  } else if (fulfillProblem && !preserveProblem) {
+    delta = 0.065 * attempt;
+    retryClass = "fulfill";
+  } else if (preserveProblem && fulfillProblem) {
+    delta = -0.02 * attempt;
+    retryClass = "balanced";
+  } else if (textProblem) {
+    delta = 0;
+    retryClass = "text";
+  }
+
+  if (artifactProblem) {
+    delta -= 0.02 * attempt;
+    if (
+      !preserveProblem &&
+      !fulfillProblem &&
+      !textProblem
+    ) {
+      retryClass = "artifact";
+    }
+  }
+
+  const editStrength = Math.max(
+    0.05,
+    Math.min(0.85, baseStrength + delta)
+  );
+
+  const hints = [];
+
+  if (retryClass === "preserve") {
+    hints.push(
+      "Reduce transformation pressure outside the requested target and lock the authoritative reference more strongly."
+    );
+  } else if (retryClass === "fulfill") {
+    hints.push(
+      "Increase transformation pressure only on the explicitly requested target while keeping protected regions locked."
+    );
+  } else if (retryClass === "text") {
+    hints.push(
+      "Keep global composition stable and focus the retry on exact text rendering character-for-character."
+    );
+  } else if (retryClass === "artifact") {
+    hints.push(
+      "Use a gentler correction focused on removing artifacts without redesigning valid regions."
+    );
+  } else {
+    hints.push(
+      "Balance target fulfillment with strict preservation of protected regions."
+    );
+  }
+
+  if (blockers.has("reference_leakage")) {
+    hints.push(
+      "Do not transfer identity, pose, background or scene state from supplementary references."
+    );
+  }
+
+  if (blockers.has("reference_compliance")) {
+    hints.push(
+      "Apply only the declared useFor attributes from supplementary references more faithfully."
+    );
+  }
+
+  return {
+    retryClass,
+    editStrength,
+    delta,
+    blockers: [...blockers],
+    promptHint: hints.join(" ").slice(0, 1200),
+  };
+}
