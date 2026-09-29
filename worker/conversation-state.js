@@ -511,6 +511,8 @@ export class ConversationState extends DurableObject {
       textAccuracy: clampScore(caseData.textAccuracy),
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
       rootReferenceUsed: Boolean(caseData.rootReferenceUsed),
+      userSignal: cleanSignal(caseData.userSignal || "neutral"),
+      userFeedbackAt: Number(caseData.userFeedbackAt || 0),
       targets: cleanStringArrayForCase(caseData.targets, 12),
       riskFlags: cleanStringArrayForCase(caseData.riskFlags, 12),
       successCriteria: cleanStringArrayForCase(caseData.successCriteria, 10),
@@ -544,12 +546,19 @@ export class ConversationState extends DurableObject {
     // Keep strong exemplars AND semantically close failures. The failures are
     // especially valuable because they tell the planner what not to repeat.
     const successful = ranked
-      .filter((entry) => entry.item?.pass !== false)
+      .filter(
+        (entry) =>
+          entry.item?.pass !== false &&
+          entry.item?.userSignal !== "negative"
+      )
       .slice(0, 12);
     const warnings = ranked
       .filter(
         (entry) =>
-          entry.item?.pass === false &&
+          (
+            entry.item?.pass === false ||
+            entry.item?.userSignal === "negative"
+          ) &&
           Number(entry.semanticSimilarity || 0) > 0
       )
       .sort(
@@ -613,6 +622,34 @@ export class ConversationState extends DurableObject {
       mode: requestedMode,
       query: queryText,
       cases: relevant,
+    };
+  }
+
+  async applyImageCaseFeedback(caseId, signal = "neutral") {
+    const id = cleanText(caseId || "", 120);
+    if (!id) return { ok: false, reason: "missing-case-id" };
+
+    const normalizedSignal = cleanSignal(signal);
+    const cases = (await this.ctx.storage.get("imageCases")) || [];
+    const list = Array.isArray(cases) ? [...cases] : [];
+    const index = list.findIndex((item) => String(item?.id || "") === id);
+
+    if (index < 0) {
+      return { ok: false, reason: "case-not-found" };
+    }
+
+    list[index] = {
+      ...list[index],
+      userSignal: normalizedSignal,
+      userFeedbackAt: Date.now(),
+    };
+
+    await this.ctx.storage.put("imageCases", list.slice(-MAX_IMAGE_CASES));
+
+    return {
+      ok: true,
+      id,
+      signal: normalizedSignal,
     };
   }
 
