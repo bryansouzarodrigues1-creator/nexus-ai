@@ -781,6 +781,44 @@ async function handleLearningStatus(env) {
               (item) => Number(item?.extraReferencesUsed || 0) > 0
             ).length
           : 0,
+        candidateArenaCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => Boolean(item?.candidateArenaUsed)
+            ).length
+          : 0,
+        qualitySelectedCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => item?.selectedImageQuality === "quality"
+            ).length
+          : 0,
+        fastSelectedCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => item?.selectedImageQuality === "fast"
+            ).length
+          : 0,
+        preserveRetryCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => item?.retryClass === "preserve"
+            ).length
+          : 0,
+        fulfillRetryCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => item?.retryClass === "fulfill"
+            ).length
+          : 0,
+        exactTextCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => Number(item?.exactTextTotal || 0) > 0
+            ).length
+          : 0,
+        exactTextPerfectCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) =>
+                Number(item?.exactTextTotal || 0) > 0 &&
+                Number(item?.exactTextMatches || 0) ===
+                  Number(item?.exactTextTotal || 0)
+            ).length
+          : 0,
       },
       modelStats: stats,
       lessons,
