@@ -260,12 +260,23 @@ export class ConversationState extends DurableObject {
       updatedAt: Date.now(),
     };
 
-    const entries = Object.entries(tasks)
-      .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))
-      .slice(0, MAX_TASKS);
+    const sortedEntries = Object.entries(tasks)
+      .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0));
+    const entries = sortedEntries.slice(0, MAX_TASKS);
+    const evictedIds = sortedEntries
+      .slice(MAX_TASKS)
+      .map(([id]) => id);
 
     const next = Object.fromEntries(entries);
     await this.ctx.storage.put("tasks", next);
+
+    for (const evictedId of evictedIds) {
+      try {
+        await this.deleteTaskPayload(evictedId);
+        await this.deleteTaskArtifact(evictedId);
+      } catch {}
+    }
+
     return next[taskId];
   }
 
