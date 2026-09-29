@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { rankImageCases } from "./image-case-ranking.js";
 
 const MAX_EVENTS = 120;
 const MAX_TASKS = 40;
@@ -509,6 +510,8 @@ export class ConversationState extends DurableObject {
       artifactFree: clampScore(caseData.artifactFree),
       textAccuracy: clampScore(caseData.textAccuracy),
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
+      targets: cleanStringArrayForCase(caseData.targets, 12),
+      riskFlags: cleanStringArrayForCase(caseData.riskFlags, 12),
       successCriteria: cleanStringArrayForCase(caseData.successCriteria, 10),
       issues: cleanStringArrayForCase(caseData.issues, 10),
       unwantedChanges: cleanStringArrayForCase(caseData.unwantedChanges, 10),
@@ -521,52 +524,52 @@ export class ConversationState extends DurableObject {
     return item;
   }
 
-  async getImageCaseContext(mode = "") {
+  async getImageCaseContext(mode = "", query = "", targets = []) {
     const requestedMode = cleanText(mode || "", 40);
+    const queryText = cleanText(query || "", 2200);
+    const targetList = cleanStringArrayForCase(targets, 12);
     const cases = (await this.ctx.storage.get("imageCases")) || [];
-    const relevant = (Array.isArray(cases) ? cases : [])
-      .filter((item) => !requestedMode || item?.mode === requestedMode)
-      .sort((a, b) => {
-        const aVerified = a?.verified ? 1 : 0;
-        const bVerified = b?.verified ? 1 : 0;
-        const aPass = a?.pass ? 1 : 0;
-        const bPass = b?.pass ? 1 : 0;
-        const aScore = Number.isFinite(Number(a?.score)) ? Number(a.score) : 0.5;
-        const bScore = Number.isFinite(Number(b?.score)) ? Number(b.score) : 0.5;
-        return (
-          bVerified - aVerified ||
-          bPass - aPass ||
-          bScore - aScore ||
-          Number(b?.at || 0) - Number(a?.at || 0)
-        );
-      })
-      .slice(0, 20)
-      .map((item) => ({
-        mode: item.mode,
-        preservationLevel: item.preservationLevel,
-        intentSummary: item.intentSummary,
-        provider: item.provider,
-        model: item.model,
-        verified: Boolean(item.verified),
-        pass: Boolean(item.pass),
-        score: item.score,
-        identity: item.identity,
-        requestFulfillment: item.requestFulfillment,
-        artifactFree: item.artifactFree,
-        textAccuracy: item.textAccuracy,
-        retries: Number(item.retries || 0),
-        successCriteria: Array.isArray(item.successCriteria)
-          ? item.successCriteria
-          : [],
-        issues: Array.isArray(item.issues) ? item.issues : [],
-        unwantedChanges: Array.isArray(item.unwantedChanges)
-          ? item.unwantedChanges
-          : [],
-        at: Number(item.at || 0),
-      }));
+
+    const ranked = rankImageCases(
+      Array.isArray(cases) ? cases : [],
+      {
+        mode: requestedMode,
+        query: queryText,
+        targets: targetList,
+        limit: 20,
+      }
+    );
+
+    const relevant = ranked.map(({ item, relevance }) => ({
+      mode: item.mode,
+      preservationLevel: item.preservationLevel,
+      intentSummary: item.intentSummary,
+      provider: item.provider,
+      model: item.model,
+      verified: Boolean(item.verified),
+      pass: Boolean(item.pass),
+      score: item.score,
+      identity: item.identity,
+      requestFulfillment: item.requestFulfillment,
+      artifactFree: item.artifactFree,
+      textAccuracy: item.textAccuracy,
+      retries: Number(item.retries || 0),
+      targets: Array.isArray(item.targets) ? item.targets : [],
+      riskFlags: Array.isArray(item.riskFlags) ? item.riskFlags : [],
+      successCriteria: Array.isArray(item.successCriteria)
+        ? item.successCriteria
+        : [],
+      issues: Array.isArray(item.issues) ? item.issues : [],
+      unwantedChanges: Array.isArray(item.unwantedChanges)
+        ? item.unwantedChanges
+        : [],
+      relevance: Number(relevance || 0),
+      at: Number(item.at || 0),
+    }));
 
     return {
       mode: requestedMode,
+      query: queryText,
       cases: relevant,
     };
   }
