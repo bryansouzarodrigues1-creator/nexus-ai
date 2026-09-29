@@ -358,6 +358,14 @@ function App(){
         identityScore:Number.isFinite(message?.identityScore)?message.identityScore:null,
         fulfillmentScore:Number.isFinite(message?.fulfillmentScore)?message.fulfillmentScore:null,
         artifactScore:Number.isFinite(message?.artifactScore)?message.artifactScore:null,
+        textScore:Number.isFinite(message?.textScore)?message.textScore:null,
+        deterministicTextScore:Number.isFinite(message?.deterministicTextScore)?message.deterministicTextScore:null,
+        exactTextMatches:Number.isFinite(message?.exactTextMatches)?message.exactTextMatches:null,
+        exactTextTotal:Number.isFinite(message?.exactTextTotal)?message.exactTextTotal:null,
+        referenceScore:Number.isFinite(message?.referenceScore)?message.referenceScore:null,
+        referenceLeakageRisk:Number.isFinite(message?.referenceLeakageRisk)?message.referenceLeakageRisk:null,
+        qualityGateState:message?.qualityGateState||null,
+        qualityGateScore:Number.isFinite(message?.qualityGateScore)?message.qualityGateScore:null,
         retries:Number(message?.visualRetry||message?.videoFallbacks||0),
         adaptiveRouter:message?.adaptiveRouter||null,
         rootReferenceUsed:Boolean(message?.rootReferenceUsed),
@@ -897,6 +905,12 @@ function App(){
         const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
         const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
         const textScoreRaw=res.headers.get('x-nexus-text-score');
+        const deterministicTextScoreRaw=res.headers.get('x-nexus-deterministic-text-score');
+        const exactTextMatchesRaw=res.headers.get('x-nexus-exact-text-matches');
+        const exactTextTotalRaw=res.headers.get('x-nexus-exact-text-total');
+        const referenceVerified=res.headers.get('x-nexus-reference-verified')==='1';
+        const referenceScoreRaw=res.headers.get('x-nexus-reference-score');
+        const referenceLeakageRaw=res.headers.get('x-nexus-reference-leakage');
         const qualityGateState=res.headers.get('x-nexus-quality-gate')||'unverified';
         const qualityGateScoreRaw=res.headers.get('x-nexus-quality-gate-score');
         const qualityGateBlockersRaw=res.headers.get('x-nexus-quality-blockers')||'';
@@ -906,6 +920,11 @@ function App(){
         const fulfillmentScore=fulfillmentScoreRaw!==null&&fulfillmentScoreRaw!==''?Number(fulfillmentScoreRaw):null;
         const artifactScore=artifactScoreRaw!==null&&artifactScoreRaw!==''?Number(artifactScoreRaw):null;
         const textScore=textScoreRaw!==null&&textScoreRaw!==''?Number(textScoreRaw):null;
+        const deterministicTextScore=deterministicTextScoreRaw!==null&&deterministicTextScoreRaw!==''?Number(deterministicTextScoreRaw):null;
+        const exactTextMatches=exactTextMatchesRaw!==null&&exactTextMatchesRaw!==''?Number(exactTextMatchesRaw):null;
+        const exactTextTotal=exactTextTotalRaw!==null&&exactTextTotalRaw!==''?Number(exactTextTotalRaw):null;
+        const referenceScore=referenceScoreRaw!==null&&referenceScoreRaw!==''?Number(referenceScoreRaw):null;
+        const referenceLeakageRisk=referenceLeakageRaw!==null&&referenceLeakageRaw!==''?Number(referenceLeakageRaw):null;
         const qualityGateScore=qualityGateScoreRaw!==null&&qualityGateScoreRaw!==''?Number(qualityGateScoreRaw):null;
         const qualityGateBlockers=qualityGateBlockersRaw
           ?qualityGateBlockersRaw.split(',').map(x=>x.trim()).filter(Boolean)
@@ -955,6 +974,12 @@ function App(){
           fulfillmentScore,
           artifactScore,
           textScore,
+          deterministicTextScore,
+          exactTextMatches,
+          exactTextTotal,
+          referenceVerified,
+          referenceScore,
+          referenceLeakageRisk,
           qualityGateState,
           qualityGateScore,
           qualityGateBlockers,
@@ -1310,7 +1335,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.qualityGateState==='pass'?' · ✅ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'OK'):m.qualityGateState==='fail'?' · ⚠ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'falhou'):''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{Number.isFinite(m.exactTextTotal)&&m.exactTextTotal>0?' · texto exato '+(m.exactTextMatches??0)+'/'+m.exactTextTotal:''}{Number.isFinite(m.referenceScore)?' · referência '+Math.round(m.referenceScore*100)+'%':''}{Number.isFinite(m.referenceLeakageRisk)?' · vazamento '+Math.round(m.referenceLeakageRisk*100)+'%':''}{m.qualityGateState==='pass'?' · ✅ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'OK'):m.qualityGateState==='fail'?' · ⚠ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'falhou'):''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
