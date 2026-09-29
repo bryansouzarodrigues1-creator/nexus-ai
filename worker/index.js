@@ -710,6 +710,11 @@ async function handleLearningStatus(env) {
         imageCases: Array.isArray(snapshot?.imageCases)
           ? snapshot.imageCases.length
           : 0,
+        rootReferenceCases: Array.isArray(snapshot?.imageCases)
+          ? snapshot.imageCases.filter(
+              (item) => Boolean(item?.rootReferenceUsed)
+            ).length
+          : 0,
       },
       modelStats: stats,
       lessons,
