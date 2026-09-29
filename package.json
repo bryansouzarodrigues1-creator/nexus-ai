@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js && node src/image-context.test.js && node --check worker/image-task-core.js && node worker/image-task-core.test.js",
+    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js && node src/image-context.test.js && node --check worker/image-task-core.js && node worker/image-task-core.test.js && node worker/image-routing-policy.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },
