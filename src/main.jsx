@@ -1162,7 +1162,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.7.1</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.7.2</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1202,6 +1202,7 @@ function App(){
               <div><Sparkles size={17}/><strong>{learningStatus?.adaptiveRouter?'ON':'—'}</strong><span>Adaptive Router</span></div>
               <div><Image size={17}/><strong>{learningStatus?.summary?.imageCases??'—'}</strong><span>casos visuais</span></div>
               <div><LockKeyhole size={17}/><strong>{learningStatus?.summary?.rootReferenceCases??'—'}</strong><span>âncoras raiz</span></div>
+              <div><Image size={17}/><strong>{learningStatus?.summary?.supplementaryReferenceCases??'—'}</strong><span>multi-ref</span></div>
             </div>
 
             <div className="learning-section">
