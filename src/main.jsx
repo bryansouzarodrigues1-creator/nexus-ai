@@ -95,7 +95,13 @@ async function shrinkImageDataUrl(dataUrl,maxSide=500){
       canvas.height=Math.max(1,Math.round(img.height*scale));
       const ctx=canvas.getContext('2d');
       ctx.drawImage(img,0,0,canvas.width,canvas.height);
-      resolve(canvas.toDataURL('image/jpeg',0.9));
+      const sourceMime=(dataUrl.match(/^data:([^;]+)/i)?.[1]||'').toLowerCase();
+      const outputMime=sourceMime==='image/png'?'image/png':'image/jpeg';
+      resolve(
+        outputMime==='image/png'
+          ?canvas.toDataURL('image/png')
+          :canvas.toDataURL('image/jpeg',0.94)
+      );
     };
     img.onerror=()=>resolve(dataUrl);
     img.src=dataUrl;
@@ -116,7 +122,34 @@ async function imageDataUrlDimensions(dataUrl){
 }
 
 function wantsFreshImage(text){
-  return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|reinicie|recomece)\b/i.test(text);
+  return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|sem relacao|reinicie|recomece|novo desenho|nova foto)\b/i.test(String(text||''));
+}
+
+function shouldContinueImageContext(text,hasPreviousImage){
+  if(!hasPreviousImage)return false;
+  const value=String(text||'').trim();
+  if(!value)return true;
+  if(wantsFreshImage(value))return false;
+
+  const explicitReference=
+    /\b(essa|esta|nessa|nesta|dessa|desta|mesma|anterior|acima|última|ultima)\s+(imagem|foto|arte|imagem gerada|foto gerada)\b/i.test(value) ||
+    /\b(nela|nessa imagem|na imagem|na foto|a partir dela|a partir dessa|use essa|use esta|mantenha essa)\b/i.test(value);
+
+  const editLanguage=
+    /\b(edite|editar|mude|mudar|troque|trocar|remova|remover|retire|tirar|apague|apagar|adicione|adicionar|coloque|colocar|deixe|deixar|melhore|melhorar|corrija|corrigir|transforme|transformar|preserve|manter|mantenha|aumente|reduza|fundo|rosto|cabelo|camisa|roupa|cor|objeto)\b/i.test(value);
+
+  const explicitNewCreation=
+    /\b(gere|gera|gerar|crie|cria|criar|faça|faca|desenhe|produza|generate|create|make|draw)\b[\s\S]{0,45}\b(uma|um)?\s*(nova\s+)?(imagem|foto|ilustração|ilustracao|desenho|arte)\b/i.test(value) ||
+    /\b(gere|gera|crie|cria|faça|faca|desenhe|produza)\b[\s\S]{0,35}\b(de|do|da)\b/i.test(value);
+
+  if(explicitReference||editLanguage)return true;
+  if(explicitNewCreation)return false;
+
+  // Follow-ups curtos como "mais realista", "um pouco mais claro" ou
+  // "agora cacheado" normalmente se referem ao resultado visual anterior.
+  if(value.length<=120)return true;
+
+  return false;
 }
 
 function wantsHighImageQuality(text){
@@ -631,7 +664,10 @@ function App(){
 
       if(requestMode==='image'){
         const previousImage=[...(currentThread?.messages||[])].reverse().find(m=>m.media?.type==='image');
-        const continuePrevious=Boolean(previousImage&&!wantsFreshImage(effectiveText));
+        const continuePrevious=Boolean(
+          previousImage &&
+          shouldContinueImageContext(effectiveText,true)
+        );
         const sourceImageRaw=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :continuePrevious?await mediaAsDataUrl(previousImage):null;
@@ -943,7 +979,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.6</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.6.1</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1079,7 +1115,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
