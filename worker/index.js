@@ -275,6 +275,11 @@ function formatImageCaseContext(context) {
           Math.round(Number(item.semanticSimilarity) * 100) +
           "%"
         : "",
+      item?.userSignal === "positive"
+        ? "usuário=aprovou"
+        : item?.userSignal === "negative"
+          ? "usuário=reprovou"
+          : "",
       "retries=" + Number(item?.retries || 0),
     ].filter(Boolean).join(" · ");
 
@@ -300,11 +305,19 @@ function formatImageCaseContext(context) {
   };
 
   const successes = cases
-    .filter((item) => item?.pass !== false)
+    .filter(
+      (item) =>
+        item?.pass !== false &&
+        item?.userSignal !== "negative"
+    )
     .slice(0, 5);
 
   const failures = cases
-    .filter((item) => item?.pass === false)
+    .filter(
+      (item) =>
+        item?.pass === false ||
+        item?.userSignal === "negative"
+    )
     .sort(
       (a, b) =>
         Number(b?.semanticSimilarity || 0) -
@@ -357,7 +370,13 @@ function buildModeAwareImageStats(genericStats, imageCases) {
       fulfillmentCount: 0,
     };
     current.count += 1;
-    if (item?.pass) current.pass += 1;
+    const effectivePass =
+      item?.userSignal === "negative"
+        ? false
+        : item?.userSignal === "positive"
+          ? true
+          : Boolean(item?.pass);
+    if (effectivePass) current.pass += 1;
     if (Number.isFinite(Number(item?.score))) {
       current.scoreSum += Number(item.score);
       current.scoreCount += 1;
@@ -452,10 +471,12 @@ function buildModeAwareImageStats(genericStats, imageCases) {
 
 async function recordGlobalImageCase(env, caseData = {}) {
   const stub = learningStub(env);
-  if (!stub) return;
+  if (!stub) return null;
   try {
-    await stub.recordImageCase(caseData);
-  } catch {}
+    return await stub.recordImageCase(caseData);
+  } catch {
+    return null;
+  }
 }
 
 async function extractFeedbackLesson(env, feedback = {}) {
@@ -542,6 +563,22 @@ async function handleFeedback(request, env) {
   }
 
   const stored = await stub.recordFeedback(feedback);
+
+  let imageCaseFeedback = null;
+  const imageCaseId =
+    feedback.kind === "image"
+      ? String(feedback.meta?.imageCaseId || "").slice(0, 120)
+      : "";
+
+  if (imageCaseId) {
+    try {
+      imageCaseFeedback = await stub.applyImageCaseFeedback(
+        imageCaseId,
+        feedback.signal
+      );
+    } catch {}
+  }
+
   const lesson = await extractFeedbackLesson(env, feedback);
 
   if (lesson) {
@@ -569,6 +606,7 @@ async function handleFeedback(request, env) {
     ok: true,
     feedbackId: stored?.id || null,
     lessonStored: Boolean(lesson),
+    imageCaseFeedbackApplied: Boolean(imageCaseFeedback?.ok),
     lesson: lesson
       ? {
           taskType: lesson.taskType,
@@ -3814,7 +3852,7 @@ async function handleImage(request, env) {
           }
         }
 
-        await recordGlobalImageCase(env, {
+        const imageCase = await recordGlobalImageCase(env, {
           mode: finalMode,
           preservationLevel: taskPlan.preservationLevel,
           intentSummary: taskPlan.intentSummary || prompt,
@@ -3832,6 +3870,8 @@ async function handleImage(request, env) {
           textAccuracy: best.verification?.textAccuracy,
           retries: best.retryCount,
           rootReferenceUsed: hasRootReference,
+          targets: taskPlan.targets || [],
+          riskFlags: taskPlan.riskFlags || [],
           successCriteria: taskPlan.successCriteria,
           issues: best.verification?.issues || [],
           unwantedChanges:
@@ -3846,6 +3886,8 @@ async function handleImage(request, env) {
               "Cache-Control": "no-store",
               "X-Nexus-Image-Mode": finalMode,
               "X-Nexus-Image-Task": finalMode,
+              "X-Nexus-Image-Case-Id":
+                imageCase?.id || "",
               "X-Nexus-Preservation":
                 taskPlan.preservationLevel,
               "X-Nexus-Root-Reference":
@@ -4107,7 +4149,7 @@ async function handleImage(request, env) {
       }
     );
 
-    await recordGlobalImageCase(env, {
+    const imageCase = await recordGlobalImageCase(env, {
       mode,
       preservationLevel: taskPlan.preservationLevel,
       intentSummary: taskPlan.intentSummary || prompt,
@@ -4125,6 +4167,8 @@ async function handleImage(request, env) {
       textAccuracy: fallbackVerification.textAccuracy,
       retries: 0,
       rootReferenceUsed: hasRootReference,
+      targets: taskPlan.targets || [],
+      riskFlags: taskPlan.riskFlags || [],
       successCriteria: taskPlan.successCriteria,
       issues: fallbackVerification.issues || [],
       unwantedChanges:
@@ -4138,6 +4182,8 @@ async function handleImage(request, env) {
         "Cache-Control": "no-store",
         "X-Nexus-Image-Mode": mode,
         "X-Nexus-Image-Task": mode,
+        "X-Nexus-Image-Case-Id":
+          imageCase?.id || "",
         "X-Nexus-Preservation":
           taskPlan.preservationLevel,
         "X-Nexus-Root-Reference":
