@@ -16,6 +16,7 @@ import {
   fuseReferenceCompliance,
   applyImageQualityGate,
   planImageRetryStrategy,
+  selectBetterVisualCandidate,
 } from "./image-quality-gate.js";
 import {
   extractExactRequestedText,
@@ -4512,14 +4513,11 @@ async function handleImage(request, env) {
             outputSize,
           };
 
-          if (
-            !bestRejectedAcrossRoutes ||
-            best.candidateScore >
-              bestRejectedAcrossRoutes.best.candidateScore
-          ) {
-            bestRejectedAcrossRoutes =
-              candidateSnapshot;
-          }
+          bestRejectedAcrossRoutes =
+            selectBetterVisualCandidate(
+              bestRejectedAcrossRoutes,
+              candidateSnapshot
+            );
 
           if (
             imageQuality === "quality" &&
