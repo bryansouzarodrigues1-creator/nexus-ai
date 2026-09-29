@@ -705,12 +705,13 @@ async function handleStatus(env) {
       durableConversationState: Boolean(env.CONVERSATIONS),
       agentWorkflow: Boolean(env.NEXUS_AGENT),
       orchestration: "router+durable-state+planner-solver-critic-verifier",
-      visualEditing: "image-task-router+visual-context-v2+edit-spec-v2+direct-visual-verifier+best-of-three-retry",
+      visualEditing: "image-task-router+visual-context-v2+edit-spec-v2+generation-and-edit-verifier+best-of-three-retry",
       imageIntelligence: {
         taskRouter: true,
         visualContextV2: true,
         editSpecV2: true,
         directVisualVerifier: true,
+        generationVerifier: true,
         correctiveRetries: 2,
         aspectRatioPreservation: true,
         visualLearning: true,
@@ -2039,20 +2040,21 @@ function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
 
 function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContext) {
   const base = String(expandedPrompt || userPrompt || "").trim();
-  if (taskPlan?.mode !== "poster") return base;
+  const isPoster = taskPlan?.mode === "poster";
 
   return [
     base,
-    "GRAPHIC DESIGN / POSTER MODE.",
-    "Build clear visual hierarchy, intentional spacing, strong focal point and professional composition.",
-    taskPlan.requiresTextAccuracy
+    isPoster
+      ? "GRAPHIC DESIGN / POSTER MODE. Build clear visual hierarchy, intentional spacing, strong focal point and professional composition."
+      : "IMAGE GENERATION MODE. Follow the requested subject, composition, style and details precisely without adding unrelated elements.",
+    taskPlan?.requiresTextAccuracy
       ? "Any user-specified text must be copied exactly, character for character. Do not invent extra copy."
       : "",
-    taskPlan.successCriteria?.length
+    taskPlan?.successCriteria?.length
       ? "SUCCESS CRITERIA: " + taskPlan.successCriteria.join("; ")
       : "",
     learnedContext
-      ? "RELEVANT LEARNED PREFERENCES: " + learnedContext.slice(0, 2400)
+      ? "RELEVANT EXPERIENCE FROM PREVIOUS IMAGE TASKS: " + learnedContext.slice(0, 2200)
       : "",
   ].filter(Boolean).join(" ");
 }
@@ -2289,6 +2291,176 @@ async function verifyVisualEdit({
     retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
     issues: cleanStringArray(parsed?.issues, 14),
     unwantedChanges: cleanStringArray(parsed?.unwantedChanges, 14),
+    resultDescription,
+  };
+}
+
+
+async function verifyGeneratedImageV2({
+  resultBlob,
+  prompt,
+  taskPlan,
+  sessionId,
+  env,
+}) {
+  if (!env.AI || !resultBlob) {
+    return {
+      verified: false,
+      pass: true,
+      score: null,
+      retryInstruction: "",
+      issues: [],
+      unwantedChanges: [],
+    };
+  }
+
+  const resultDescription = await describeVisualImage(
+    resultBlob,
+    env,
+    "imagem-gerada"
+  );
+
+  let dataUrl = "";
+  try {
+    dataUrl = await blobToDataUrlServer(resultBlob);
+  } catch {}
+
+  const schema = [
+    "Retorne SOMENTE JSON válido:",
+    "{pass:boolean,score:number,composition:number,styleMatch:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,issues:string[],retryInstruction:string}.",
+    "Todos os scores vão de 0 a 1.",
+    "Avalie se a imagem cumpre exatamente o pedido, não apenas se é bonita.",
+    "Penalize anatomia incoerente, elementos duplicados, texto ilegível/incorreto, objetos não pedidos, composição ruim e estilo divergente.",
+    taskPlan?.requiresTextAccuracy
+      ? "Há requisito de texto: copie exatamente o texto solicitado; erros ortográficos ou caracteres diferentes devem reduzir textAccuracy fortemente."
+      : "Se não houver texto relevante, textAccuracy deve ser 1.",
+  ].filter(Boolean).join(" ");
+
+  let attempt = null;
+
+  if (dataUrl) {
+    attempt = await runTextChat(
+      [
+        {
+          role: "system",
+          content:
+            "Você é o Generation Visual Verifier V2 da NEXUS AI. Inspecione a imagem gerada diretamente e compare com o pedido. " +
+            schema,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "PEDIDO ORIGINAL: " + String(prompt || ""),
+                "TASK PLAN: " + JSON.stringify(taskPlan || {}),
+                resultDescription
+                  ? "DESCRIÇÃO EXTRAÍDA: " + resultDescription.slice(0, 9000)
+                  : "",
+              ].filter(Boolean).join("\n\n"),
+            },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      env,
+      {
+        cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
+        maxTokens: 1050,
+        temperature: 0.01,
+        topP: 0.7,
+        sessionId: sessionId ? sessionId + "-generation-verify-v2" : "",
+        cloudflareOnly: true,
+      }
+    );
+  }
+
+  if (!attempt?.ok && resultDescription) {
+    attempt = await runTextChat(
+      [
+        {
+          role: "system",
+          content:
+            "Você é o Generation Visual Verifier V2 da NEXUS AI. Avalie rigorosamente o resultado descrito contra o pedido. " +
+            schema,
+        },
+        {
+          role: "user",
+          content: [
+            "PEDIDO:\n" + String(prompt || ""),
+            "TASK PLAN:\n" + JSON.stringify(taskPlan || {}),
+            "RESULTADO:\n" + resultDescription,
+          ].join("\n\n"),
+        },
+      ],
+      env,
+      {
+        cloudflareModel: CF_CODE_MODEL,
+        maxTokens: 950,
+        temperature: 0.02,
+        topP: 0.74,
+        sessionId: sessionId ? sessionId + "-generation-verify-text" : "",
+        cloudflareOnly: true,
+      }
+    );
+  }
+
+  if (!attempt?.ok) {
+    return {
+      verified: false,
+      pass: true,
+      score: null,
+      retryInstruction: "",
+      issues: [],
+      unwantedChanges: [],
+      resultDescription,
+    };
+  }
+
+  const parsed = parseJsonLooseText(extractModelText(attempt.raw), {});
+  const clamp = (value, fallback = 0.5) =>
+    Math.max(
+      0,
+      Math.min(
+        1,
+        Number.isFinite(Number(value)) ? Number(value) : fallback
+      )
+    );
+
+  const score = clamp(parsed?.score);
+  const composition = clamp(parsed?.composition, score);
+  const stylePreservation = clamp(parsed?.styleMatch, score);
+  const requestFulfillment = clamp(parsed?.requestFulfillment, score);
+  const artifactFree = clamp(parsed?.artifactFree, score);
+  const textAccuracy = clamp(
+    parsed?.textAccuracy,
+    taskPlan?.requiresTextAccuracy ? score : 1
+  );
+  const realism = clamp(parsed?.realism, artifactFree);
+
+  const pass =
+    score >= 0.78 &&
+    requestFulfillment >= 0.78 &&
+    artifactFree >= 0.72 &&
+    composition >= 0.68 &&
+    (!taskPlan?.requiresTextAccuracy || textAccuracy >= 0.82);
+
+  return {
+    verified: true,
+    pass,
+    score,
+    identity: 1,
+    composition,
+    backgroundPreservation: 1,
+    stylePreservation,
+    requestFulfillment,
+    artifactFree,
+    textAccuracy,
+    realism,
+    retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
+    issues: cleanStringArray(parsed?.issues, 14),
+    unwantedChanges: [],
     resultDescription,
   };
 }
@@ -2991,14 +3163,16 @@ async function handleImage(request, env) {
         });
 
         let retryCount = 0;
+        const generatedBlob = new Blob(
+          [generated.bytes],
+          { type: "image/jpeg" }
+        );
+
         let verification = sourceImage
           ? await verifyVisualEdit({
               originalBlob: sourceImage,
               originalDescription: sourceDescription,
-              resultBlob: new Blob(
-                [generated.bytes],
-                { type: "image/jpeg" }
-              ),
+              resultBlob: generatedBlob,
               prompt,
               spec: editSpec,
               taskPlan,
@@ -3006,21 +3180,20 @@ async function handleImage(request, env) {
               sessionId,
               env,
             })
-          : {
-              verified: false,
-              pass: true,
-              score: null,
-              retryInstruction: "",
-              issues: [],
-              unwantedChanges: [],
-            };
+          : await verifyGeneratedImageV2({
+              resultBlob: generatedBlob,
+              prompt,
+              taskPlan,
+              sessionId,
+              env,
+            });
 
         let best = {
           generated,
           verification,
           retryCount,
           candidateScore:
-            sourceImage
+            verification?.verified
               ? visualCandidateScore(
                   verification,
                   taskPlan
@@ -3029,7 +3202,7 @@ async function handleImage(request, env) {
         };
 
         const maxRetries =
-          sourceImage && verification.verified
+          verification?.verified
             ? (imageQuality === "quality" ? 2 : 1)
             : 0;
 
@@ -3074,7 +3247,9 @@ async function handleImage(request, env) {
                 Math.round(v.textAccuracy * 100) +
                 "%. Preserve/copy required text exactly."
               : "",
-            "Use image 0 as the sole authoritative visual source. Do not reinterpret unrelated regions.",
+            sourceImage
+              ? "Use image 0 as the sole authoritative visual source. Do not reinterpret unrelated regions."
+              : "Generate a corrected new image that fixes the listed issues while preserving all parts of the original request that were already correct.",
           ].filter(Boolean).join(" ");
 
           const retried = await runCloudflareImage({
@@ -3092,23 +3267,36 @@ async function handleImage(request, env) {
             env,
           });
 
-          const retryVerification = await verifyVisualEdit({
-            originalBlob: sourceImage,
-            originalDescription: sourceDescription,
-            resultBlob: new Blob(
-              [retried.bytes],
-              { type: "image/jpeg" }
-            ),
-            prompt,
-            spec: editSpec,
-            taskPlan,
-            visualContext,
-            sessionId:
-              sessionId
-                ? sessionId + "-retry-" + retryCount
-                : "",
-            env,
-          });
+          const retryBlob = new Blob(
+            [retried.bytes],
+            { type: "image/jpeg" }
+          );
+
+          const retryVerification = sourceImage
+            ? await verifyVisualEdit({
+                originalBlob: sourceImage,
+                originalDescription: sourceDescription,
+                resultBlob: retryBlob,
+                prompt,
+                spec: editSpec,
+                taskPlan,
+                visualContext,
+                sessionId:
+                  sessionId
+                    ? sessionId + "-retry-" + retryCount
+                    : "",
+                env,
+              })
+            : await verifyGeneratedImageV2({
+                resultBlob: retryBlob,
+                prompt,
+                taskPlan,
+                sessionId:
+                  sessionId
+                    ? sessionId + "-retry-" + retryCount
+                    : "",
+                env,
+              });
 
           const retryCandidateScore =
             visualCandidateScore(
@@ -3132,7 +3320,6 @@ async function handleImage(request, env) {
         }
 
         if (
-          sourceImage &&
           quality === "quality" &&
           imageQuality === "quality" &&
           best.verification?.verified &&
@@ -3232,7 +3419,6 @@ async function handleImage(request, env) {
         });
 
         if (
-          sourceImage &&
           best.verification?.verified &&
           !best.verification?.pass
         ) {
@@ -3256,7 +3442,9 @@ async function handleImage(request, env) {
                 " com preservação " +
                 taskPlan.preservationLevel,
               guidance:
-                "Em tarefas semelhantes, preservar tudo fora do alvo e corrigir estes padrões observados: " +
+                (sourceImage
+                  ? "Em tarefas semelhantes, preservar tudo fora do alvo e corrigir estes padrões observados: "
+                  : "Em gerações semelhantes, cumprir melhor o pedido e corrigir estes padrões observados: ") +
                 guidance,
               confidence: Math.max(
                 0.62,
@@ -3485,27 +3673,36 @@ async function handleImage(request, env) {
     };
 
     if (
-      sourceImage &&
       env.AI &&
       image &&
       typeof image.arrayBuffer === "function"
     ) {
-      fallbackVerification =
-        await verifyVisualEdit({
-          originalBlob: sourceImage,
-          originalDescription:
-            sourceDescription,
-          resultBlob: image,
-          prompt,
-          spec: editSpec,
-          taskPlan,
-          visualContext,
-          sessionId:
-            sessionId
-              ? sessionId + "-hf-fallback"
-              : "",
-          env,
-        });
+      fallbackVerification = sourceImage
+        ? await verifyVisualEdit({
+            originalBlob: sourceImage,
+            originalDescription:
+              sourceDescription,
+            resultBlob: image,
+            prompt,
+            spec: editSpec,
+            taskPlan,
+            visualContext,
+            sessionId:
+              sessionId
+                ? sessionId + "-hf-fallback"
+                : "",
+            env,
+          })
+        : await verifyGeneratedImageV2({
+            resultBlob: image,
+            prompt,
+            taskPlan,
+            sessionId:
+              sessionId
+                ? sessionId + "-hf-fallback"
+                : "",
+            env,
+          });
     }
 
     if (sessionId) {
