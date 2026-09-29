@@ -102,13 +102,28 @@ export function describeImageCaseRelevance(item, {
   const retries = Math.max(0, Number(item?.retries || 0));
   const retryPenalty = Math.min(0.12, retries * 0.025);
 
-  const quality =
+  const verifierQuality =
     score * 0.32 +
     fulfillment * 0.28 +
     identity * 0.18 +
     artifactFree * 0.12 +
     pass * 0.07 +
     verified * 0.03;
+
+  const userSignal = String(item?.userSignal || "neutral");
+  const userApproval =
+    userSignal === "positive"
+      ? 1
+      : userSignal === "negative"
+        ? 0
+        : 0.5;
+
+  // Human feedback has more authority than the verifier, but does not erase
+  // the verifier signal entirely. Negative cases can still be retrieved as
+  // warnings because semanticSimilarity is kept separately.
+  const quality =
+    verifierQuality * 0.74 +
+    userApproval * 0.26;
 
   return {
     relevance:
@@ -118,6 +133,7 @@ export function describeImageCaseRelevance(item, {
       retryPenalty,
     semanticSimilarity: semanticProxy,
     quality,
+    userApproval,
     recency,
     retryPenalty,
   };
