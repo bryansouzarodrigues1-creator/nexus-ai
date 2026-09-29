@@ -9,7 +9,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.6.0";
+const VERSION = "2.7.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -850,6 +850,8 @@ async function handleStatus(env) {
         visualLearning: true,
         imageCaseMemory: true,
         taskAwareImageRouting: true,
+        multiReferenceContinuity: true,
+        rootReferenceAnchor: true,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
@@ -2276,6 +2278,7 @@ function visualCandidateScore(verification, taskPlan) {
 
 async function verifyVisualEdit({
   originalBlob,
+  rootReferenceBlob = null,
   originalDescription,
   resultBlob,
   prompt,
@@ -2303,9 +2306,13 @@ async function verifyVisualEdit({
   );
 
   let originalDataUrl = "";
+  let rootReferenceDataUrl = "";
   let resultDataUrl = "";
   try {
     if (originalBlob) originalDataUrl = await blobToDataUrlServer(originalBlob);
+    if (rootReferenceBlob) {
+      rootReferenceDataUrl = await blobToDataUrlServer(rootReferenceBlob);
+    }
     resultDataUrl = await blobToDataUrlServer(resultBlob);
   } catch {}
 
@@ -2336,14 +2343,22 @@ async function verifyVisualEdit({
             {
               type: "text",
               text: [
-                "IMAGEM 1 = ORIGINAL / AUTORIDADE VISUAL.",
-                "IMAGEM 2 = RESULTADO DA EDIÇÃO.",
+                "IMAGEM 1 = ESTADO ATUAL / FONTE DIRETA DA EDIÇÃO.",
+                rootReferenceDataUrl
+                  ? "IMAGEM 2 = REFERÊNCIA RAIZ / ÂNCORA DE IDENTIDADE E CONTINUIDADE."
+                  : "",
+                rootReferenceDataUrl
+                  ? "IMAGEM 3 = RESULTADO DA EDIÇÃO."
+                  : "IMAGEM 2 = RESULTADO DA EDIÇÃO.",
                 "PEDIDO: " + prompt,
                 "TASK PLAN: " + JSON.stringify(taskPlan || {}),
                 "EDIT SPEC: " + JSON.stringify(spec || {}),
                 "CONTEXTO: " + JSON.stringify(visualContext || {}),
+                rootReferenceDataUrl
+                  ? "CONTINUIDADE: penalize drift acumulado de identidade, traços, proporções, estilo e composição em relação à referência raiz quando esses elementos não forem alvo do pedido."
+                  : "",
                 originalDescription
-                  ? "DESCRIÇÃO ORIGINAL: " + originalDescription.slice(0, 9000)
+                  ? "DESCRIÇÃO DO ESTADO ATUAL: " + originalDescription.slice(0, 9000)
                   : "",
                 resultDescription
                   ? "DESCRIÇÃO RESULTADO: " + resultDescription.slice(0, 9000)
@@ -2351,9 +2366,24 @@ async function verifyVisualEdit({
               ].filter(Boolean).join("\n\n"),
             },
             { type: "image_url", image_url: { url: originalDataUrl } },
+            ...(rootReferenceDataUrl
+              ? [
+                  {
+                    type: "text",
+                    text:
+                      "Agora veja a IMAGEM 2, referência raiz da sequência:",
+                  },
+                  {
+                    type: "image_url",
+                    image_url: { url: rootReferenceDataUrl },
+                  },
+                ]
+              : []),
             {
               type: "text",
-              text: "Agora veja a IMAGEM 2, que é o resultado:",
+              text: rootReferenceDataUrl
+                ? "Agora veja a IMAGEM 3, que é o resultado:"
+                : "Agora veja a IMAGEM 2, que é o resultado:",
             },
             { type: "image_url", image_url: { url: resultDataUrl } },
           ],
@@ -2688,6 +2718,7 @@ function computeImageOutputSize({
 async function runCloudflareImage({
   prompt,
   sourceImage,
+  rootReferenceImage = null,
   quality,
   modelOverride,
   width = 1024,
@@ -2707,7 +2738,10 @@ async function runCloudflareImage({
 
   const form = new FormData();
   if (sourceImage) {
-    form.append("input_image_0", sourceImage, "reference.jpg");
+    form.append("input_image_0", sourceImage, "current-reference.jpg");
+  }
+  if (sourceImage && rootReferenceImage) {
+    form.append("input_image_1", rootReferenceImage, "root-reference.jpg");
   }
   form.append("prompt", prompt);
   form.append("width", String(roundImageDimension(width)));
@@ -3199,6 +3233,8 @@ async function handleImage(request, env) {
   const prompt = String(body.prompt || "").trim();
   const history = cleanHistory(body.history);
   const sourceImage = dataUrlToBlob(body.sourceImage);
+  const rootReferenceImage = dataUrlToBlob(body.rootReferenceImage);
+  const hasRootReference = Boolean(sourceImage && rootReferenceImage);
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
     .slice(0, 6000);
@@ -3304,7 +3340,7 @@ async function handleImage(request, env) {
     });
   }
 
-  const promptForModel = sourceImage
+  const basePromptForModel = sourceImage
     ? buildStrictEditPrompt(
         prompt,
         editSpec,
@@ -3317,6 +3353,19 @@ async function handleImage(request, env) {
         taskPlan,
         imageExperienceContext
       );
+
+  const promptForModel =
+    sourceImage && hasRootReference
+      ? [
+          basePromptForModel,
+          "MULTI-REFERENCE CONTINUITY:",
+          "Image 0 is the CURRENT working image and must receive the requested edit.",
+          "Image 1 is the ROOT/ORIGINAL continuity anchor.",
+          "Preserve identity, facial structure, body proportions, stable style and any unedited defining details from image 1 while retaining the latest valid state from image 0.",
+          "Do not revert intentional edits already present in image 0 unless the user explicitly asks to undo them.",
+          "Use image 1 to prevent cumulative identity/style drift, not to overwrite requested changes.",
+        ].join(" ")
+      : basePromptForModel;
 
   let cloudflareImageError = null;
 
@@ -3345,6 +3394,7 @@ async function handleImage(request, env) {
           modelOverride: adaptiveModelForAttempt,
           prompt: promptForModel,
           sourceImage,
+          rootReferenceImage: hasRootReference ? rootReferenceImage : null,
           width: outputSize.width,
           height: outputSize.height,
           editStrength: taskPlan.editStrength,
@@ -3360,6 +3410,7 @@ async function handleImage(request, env) {
         let verification = sourceImage
           ? await verifyVisualEdit({
               originalBlob: sourceImage,
+              rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
               originalDescription: sourceDescription,
               resultBlob: generatedBlob,
               prompt,
@@ -3437,7 +3488,11 @@ async function handleImage(request, env) {
                 "%. Preserve/copy required text exactly."
               : "",
             sourceImage
-              ? "Use image 0 as the sole authoritative visual source. Do not reinterpret unrelated regions."
+              ? (
+                  hasRootReference
+                    ? "Use image 0 as the current state and image 1 as the root continuity anchor. Fix the requested target without cumulative identity/style drift and without reverting valid prior edits."
+                    : "Use image 0 as the sole authoritative visual source. Do not reinterpret unrelated regions."
+                )
               : "Generate a corrected new image that fixes the listed issues while preserving all parts of the original request that were already correct.",
           ].filter(Boolean).join(" ");
 
@@ -3464,6 +3519,7 @@ async function handleImage(request, env) {
           const retryVerification = sourceImage
             ? await verifyVisualEdit({
                 originalBlob: sourceImage,
+                rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
                 originalDescription: sourceDescription,
                 resultBlob: retryBlob,
                 prompt,
@@ -3540,6 +3596,7 @@ async function handleImage(request, env) {
                 imageTask: finalMode,
                 preservationLevel:
                   taskPlan.preservationLevel,
+                rootReferenceUsed: hasRootReference,
                 verified:
                   Boolean(
                     best.verification?.verified
@@ -3575,6 +3632,7 @@ async function handleImage(request, env) {
                 imageTask: finalMode,
                 preservationLevel:
                   taskPlan.preservationLevel,
+                rootReferenceUsed: hasRootReference,
                 verified:
                   Boolean(
                     best.verification?.verified
@@ -3685,6 +3743,8 @@ async function handleImage(request, env) {
               "X-Nexus-Image-Task": finalMode,
               "X-Nexus-Preservation":
                 taskPlan.preservationLevel,
+              "X-Nexus-Root-Reference":
+                hasRootReference ? "1" : "0",
               "X-Nexus-Provider": "cloudflare",
               "X-Nexus-Model":
                 best.generated.model,
@@ -3869,6 +3929,7 @@ async function handleImage(request, env) {
       fallbackVerification = sourceImage
         ? await verifyVisualEdit({
             originalBlob: sourceImage,
+            rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
             originalDescription:
               sourceDescription,
             resultBlob: image,
@@ -3973,6 +4034,8 @@ async function handleImage(request, env) {
         "X-Nexus-Image-Task": mode,
         "X-Nexus-Preservation":
           taskPlan.preservationLevel,
+        "X-Nexus-Root-Reference":
+          hasRootReference ? "1" : "0",
         "X-Nexus-Provider":
           "huggingface",
         "X-Nexus-Model": model,
