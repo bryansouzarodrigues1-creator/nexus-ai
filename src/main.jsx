@@ -102,6 +102,19 @@ async function shrinkImageDataUrl(dataUrl,maxSide=500){
   });
 }
 
+async function imageDataUrlDimensions(dataUrl){
+  if(!dataUrl||!dataUrl.startsWith('data:image/'))return null;
+  return new Promise(resolve=>{
+    const img=new window.Image();
+    img.onload=()=>resolve({
+      width:Number(img.naturalWidth||img.width||0),
+      height:Number(img.naturalHeight||img.height||0)
+    });
+    img.onerror=()=>resolve(null);
+    img.src=dataUrl;
+  });
+}
+
 function wantsFreshImage(text){
   return /\b(nova imagem|imagem nova|do zero|comece do zero|outra imagem|sem relação|reinicie|recomece)\b/i.test(text);
 }
@@ -324,6 +337,11 @@ function App(){
           :null,
       meta:{
         generationMode:message?.generationMode||null,
+        imageTask:message?.imageTask||null,
+        preservationLevel:message?.preservationLevel||null,
+        identityScore:Number.isFinite(message?.identityScore)?message.identityScore:null,
+        fulfillmentScore:Number.isFinite(message?.fulfillmentScore)?message.fulfillmentScore:null,
+        artifactScore:Number.isFinite(message?.artifactScore)?message.artifactScore:null,
         retries:Number(message?.visualRetry||message?.videoFallbacks||0),
         adaptiveRouter:message?.adaptiveRouter||null
       }
@@ -617,6 +635,9 @@ function App(){
         const sourceImageRaw=activeAttachment?.kind==='image'
           ?activeAttachment.dataUrl
           :continuePrevious?await mediaAsDataUrl(previousImage):null;
+        const sourceDimensions=sourceImageRaw
+          ?await imageDataUrlDimensions(sourceImageRaw)
+          :null;
         const sourceImage=sourceImageRaw
           ?await shrinkImageDataUrl(sourceImageRaw,500)
           :null;
@@ -636,6 +657,8 @@ function App(){
             previousPrompt,
             history:creativeHistory,
             sessionId:tid,
+            sourceWidth:sourceDimensions?.width||0,
+            sourceHeight:sourceDimensions?.height||0,
             quality:wantsHighImageQuality(effectiveText)?'quality':'fast'
           })
         });
@@ -660,6 +683,18 @@ function App(){
         const visualScoreRaw=res.headers.get('x-nexus-visual-score');
         const visualScore=visualScoreRaw!==null&&visualScoreRaw!==''?Number(visualScoreRaw):null;
         const visualRetry=Number(res.headers.get('x-nexus-visual-retry')||0);
+        const imageTask=res.headers.get('x-nexus-image-task')||imageMode;
+        const preservationLevel=res.headers.get('x-nexus-preservation')||'';
+        const identityScoreRaw=res.headers.get('x-nexus-identity-score');
+        const fulfillmentScoreRaw=res.headers.get('x-nexus-fulfillment-score');
+        const artifactScoreRaw=res.headers.get('x-nexus-artifact-score');
+        const textScoreRaw=res.headers.get('x-nexus-text-score');
+        const imageWidth=Number(res.headers.get('x-nexus-image-width')||0);
+        const imageHeight=Number(res.headers.get('x-nexus-image-height')||0);
+        const identityScore=identityScoreRaw!==null&&identityScoreRaw!==''?Number(identityScoreRaw):null;
+        const fulfillmentScore=fulfillmentScoreRaw!==null&&fulfillmentScoreRaw!==''?Number(fulfillmentScoreRaw):null;
+        const artifactScore=artifactScoreRaw!==null&&artifactScoreRaw!==''?Number(artifactScoreRaw):null;
+        const textScore=textScoreRaw!==null&&textScoreRaw!==''?Number(textScoreRaw):null;
         const adaptiveUsed=res.headers.get('x-nexus-adaptive-router')==='1';
         const adaptiveScoreRaw=res.headers.get('x-nexus-adaptive-score');
         const adaptiveConfidenceRaw=res.headers.get('x-nexus-adaptive-confidence');
@@ -673,11 +708,19 @@ function App(){
           }
         };
 
-        const content=imageMode==='edit'
-          ?'Imagem editada mantendo a referência.'
-          :imageMode==='continuity-fallback'
-            ?'Imagem gerada mantendo o contexto visual possível.'
-            :'Imagem gerada.';
+        const content={
+          strict_edit:'Edição localizada concluída com preservação da referência.',
+          enhance:'Imagem aprimorada com modo de preservação máxima.',
+          remove_replace:'Remoção/substituição concluída com edição localizada.',
+          background:'Fundo editado preservando o sujeito principal.',
+          identity_lock:'Edição concluída com bloqueio de identidade.',
+          poster:'Arte/poster gerado.',
+          create:'Imagem gerada.'
+        }[imageTask]||(
+          imageMode==='edit'
+            ?'Imagem editada mantendo a referência.'
+            :'Imagem gerada.'
+        );
 
         addMessage(tid,{
           role:'assistant',
@@ -690,6 +733,14 @@ function App(){
           visualVerified,
           visualScore,
           visualRetry,
+          imageTask,
+          preservationLevel,
+          identityScore,
+          fulfillmentScore,
+          artifactScore,
+          textScore,
+          imageWidth,
+          imageHeight,
           adaptiveRouter,
           generationMode:imageMode
         });
@@ -892,7 +943,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.5</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.6</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1027,7 +1078,7 @@ function App(){
                 {m.fileName&&<div className="file-tag"><Paperclip size={12}/>{m.fileName}</div>}
                 {m.media?.type==='image'&&m.media.url&&<img className="generated" src={m.media.url} alt="Imagem"/>}
                 {m.media?.type==='video'&&m.media.url&&<video className="generated" src={m.media.url} controls/>}
-                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{m.visualRetry>0?' · retry visual':''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
