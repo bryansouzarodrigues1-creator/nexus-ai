@@ -981,6 +981,7 @@ function App(){
               <div><Activity size={17}/><strong>{learningStatus?.summary?.modelStats??'—'}</strong><span>modelos/rotas</span></div>
               <div><BrainCircuit size={17}/><strong>{learningStatus?.summary?.lessons??'—'}</strong><span>lições</span></div>
               <div><Sparkles size={17}/><strong>{learningStatus?.adaptiveRouter?'ON':'—'}</strong><span>Adaptive Router</span></div>
+              <div><Image size={17}/><strong>{learningStatus?.summary?.imageCases??'—'}</strong><span>casos visuais</span></div>
             </div>
 
             <div className="learning-section">
