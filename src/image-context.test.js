@@ -3,6 +3,7 @@ import {
   shouldContinueImageContext,
   wantsFreshImage,
   selectImageChainHistory,
+  selectApprovedChainReferenceKeys,
 } from "./image-context.js";
 
 assert.equal(wantsFreshImage("faz outra imagem do zero"), true);
@@ -99,3 +100,88 @@ assert.equal(
   ).length,
   2
 );
+
+
+{
+  // approved same-chain references: explicit human approval only.
+  const messages = [
+    {
+      role: "assistant",
+      imageChainId: "chain-a",
+      media: { type: "image", key: "root" },
+      feedback: "positive",
+      visualScore: 0.92,
+      identityScore: 0.97,
+      fulfillmentScore: 0.9,
+    },
+    {
+      role: "assistant",
+      imageChainId: "chain-a",
+      media: { type: "image", key: "bad" },
+      feedback: "negative",
+      visualScore: 0.99,
+      identityScore: 0.99,
+      fulfillmentScore: 0.99,
+    },
+    {
+      role: "assistant",
+      imageChainId: "chain-b",
+      media: { type: "image", key: "other-chain" },
+      feedback: "positive",
+      visualScore: 1,
+      identityScore: 1,
+      fulfillmentScore: 1,
+    },
+    {
+      role: "assistant",
+      imageChainId: "chain-a",
+      media: { type: "image", key: "approved-best" },
+      feedback: "positive",
+      visualScore: 0.96,
+      identityScore: 0.99,
+      fulfillmentScore: 0.95,
+    },
+    {
+      role: "assistant",
+      imageChainId: "chain-a",
+      media: { type: "image", key: "current" },
+      feedback: "positive",
+      visualScore: 1,
+      identityScore: 1,
+      fulfillmentScore: 1,
+    },
+  ];
+
+  assert.deepEqual(
+    selectApprovedChainReferenceKeys(
+      messages,
+      "chain-a",
+      {
+        excludeKeys: ["root", "current"],
+        limit: 2,
+      }
+    ),
+    ["approved-best"]
+  );
+
+  assert.deepEqual(
+    selectApprovedChainReferenceKeys(
+      messages,
+      "chain-a",
+      {
+        excludeKeys: [],
+        limit: 2,
+      }
+    ),
+    ["current", "approved-best"]
+  );
+
+  assert.deepEqual(
+    selectApprovedChainReferenceKeys(
+      messages,
+      "missing",
+      { limit: 2 }
+    ),
+    []
+  );
+}
