@@ -515,6 +515,10 @@ export class ConversationState extends DurableObject {
         0,
         Math.min(3, Number(caseData.extraReferencesUsed || 0))
       ),
+      autoApprovedReferencesUsed: Math.max(
+        0,
+        Math.min(3, Number(caseData.autoApprovedReferencesUsed || 0))
+      ),
       userSignal: cleanSignal(caseData.userSignal || "neutral"),
       userFeedbackAt: Number(caseData.userFeedbackAt || 0),
       targets: cleanStringArrayForCase(caseData.targets, 12),
@@ -607,6 +611,10 @@ export class ConversationState extends DurableObject {
         artifactFree: item.artifactFree,
         textAccuracy: item.textAccuracy,
         retries: Number(item.retries || 0),
+        rootReferenceUsed: Boolean(item.rootReferenceUsed),
+        extraReferencesUsed: Number(item.extraReferencesUsed || 0),
+        autoApprovedReferencesUsed:
+          Number(item.autoApprovedReferencesUsed || 0),
         targets: Array.isArray(item.targets) ? item.targets : [],
         riskFlags: Array.isArray(item.riskFlags) ? item.riskFlags : [],
         successCriteria: Array.isArray(item.successCriteria)
