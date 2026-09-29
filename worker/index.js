@@ -944,6 +944,8 @@ async function handleStatus(env) {
         contextHygiene: true,
         multiReferenceContinuity: true,
         rootReferenceAnchor: true,
+        supplementaryReferenceInputs: true,
+        maxImageReferences: 4,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
       fakeToolsAllowed: false,
@@ -2860,6 +2862,7 @@ async function runCloudflareImage({
   prompt,
   sourceImage,
   rootReferenceImage = null,
+  extraReferenceImages = [],
   quality,
   modelOverride,
   width = 1024,
@@ -2881,9 +2884,24 @@ async function runCloudflareImage({
   if (sourceImage) {
     form.append("input_image_0", sourceImage, "current-reference.jpg");
   }
+  let nextReferenceIndex = 1;
   if (sourceImage && rootReferenceImage) {
     form.append("input_image_1", rootReferenceImage, "root-reference.jpg");
+    nextReferenceIndex = 2;
   }
+
+  if (sourceImage && Array.isArray(extraReferenceImages)) {
+    for (const reference of extraReferenceImages) {
+      if (!reference || nextReferenceIndex > 3) break;
+      form.append(
+        "input_image_" + nextReferenceIndex,
+        reference,
+        "supplementary-reference-" + nextReferenceIndex + ".jpg"
+      );
+      nextReferenceIndex += 1;
+    }
+  }
+
   form.append("prompt", prompt);
   form.append("width", String(roundImageDimension(width)));
   form.append("height", String(roundImageDimension(height)));
@@ -3376,6 +3394,19 @@ async function handleImage(request, env) {
   const sourceImage = dataUrlToBlob(body.sourceImage);
   const rootReferenceImage = dataUrlToBlob(body.rootReferenceImage);
   const hasRootReference = Boolean(sourceImage && rootReferenceImage);
+  const requestedExtraReferenceImages = Array.isArray(body.extraReferenceImages)
+    ? body.extraReferenceImages
+        .slice(0, 3)
+        .map((item) => dataUrlToBlob(item))
+        .filter(Boolean)
+    : [];
+  const maxSupplementaryReferences =
+    sourceImage
+      ? Math.max(0, 3 - (hasRootReference ? 1 : 0))
+      : 0;
+  const extraReferenceImages =
+    requestedExtraReferenceImages.slice(0, maxSupplementaryReferences);
+  const extraReferencesUsed = extraReferenceImages.length;
   const previousPrompt = String(body.previousPrompt || "")
     .trim()
     .slice(0, 6000);
@@ -3496,7 +3527,7 @@ async function handleImage(request, env) {
         imageExperienceContext
       );
 
-  const promptForModel =
+  const continuityPrompt =
     sourceImage && hasRootReference
       ? [
           basePromptForModel,
@@ -3508,6 +3539,30 @@ async function handleImage(request, env) {
           "Use image 1 to prevent cumulative identity/style drift, not to overwrite requested changes.",
         ].join(" ")
       : basePromptForModel;
+
+  const supplementaryStartIndex =
+    sourceImage
+      ? (hasRootReference ? 2 : 1)
+      : 0;
+
+  const promptForModel =
+    sourceImage && extraReferencesUsed > 0
+      ? [
+          continuityPrompt,
+          "SUPPLEMENTARY USER REFERENCES:",
+          ...extraReferenceImages.map(
+            (_, index) =>
+              "User supplementary reference " +
+              (index + 1) +
+              " is Image " +
+              (supplementaryStartIndex + index) +
+              "."
+          ),
+          "Use supplementary references only for visual attributes the user request actually calls for, such as clothing, object design, material, color, hairstyle or style.",
+          "Do not merge unrelated identities, faces, people or scene elements from supplementary references unless explicitly requested.",
+          "Image 0 remains the current working image.",
+        ].join(" ")
+      : continuityPrompt;
 
   let cloudflareImageError = null;
 
@@ -3537,6 +3592,7 @@ async function handleImage(request, env) {
           prompt: promptForModel,
           sourceImage,
           rootReferenceImage: hasRootReference ? rootReferenceImage : null,
+          extraReferenceImages,
           width: outputSize.width,
           height: outputSize.height,
           editStrength: taskPlan.editStrength,
@@ -3739,6 +3795,7 @@ async function handleImage(request, env) {
                 preservationLevel:
                   taskPlan.preservationLevel,
                 rootReferenceUsed: hasRootReference,
+                extraReferencesUsed,
                 verified:
                   Boolean(
                     best.verification?.verified
@@ -3775,6 +3832,7 @@ async function handleImage(request, env) {
                 preservationLevel:
                   taskPlan.preservationLevel,
                 rootReferenceUsed: hasRootReference,
+                extraReferencesUsed,
                 verified:
                   Boolean(
                     best.verification?.verified
@@ -3892,6 +3950,8 @@ async function handleImage(request, env) {
                 taskPlan.preservationLevel,
               "X-Nexus-Root-Reference":
                 hasRootReference ? "1" : "0",
+              "X-Nexus-Extra-References":
+                String(extraReferencesUsed),
               "X-Nexus-Provider": "cloudflare",
               "X-Nexus-Model":
                 best.generated.model,
@@ -4188,6 +4248,7 @@ async function handleImage(request, env) {
           taskPlan.preservationLevel,
         "X-Nexus-Root-Reference":
           hasRootReference ? "1" : "0",
+        "X-Nexus-Extra-References": "0",
         "X-Nexus-Provider":
           "huggingface",
         "X-Nexus-Model": model,
