@@ -4361,6 +4361,12 @@ async function handleImage(request, env) {
                   best.verification?.identity,
                 requestFulfillment:
                   best.verification?.requestFulfillment,
+                textAccuracy:
+                  best.verification?.textAccuracy,
+                referenceScore:
+                  best.verification?.referenceScore,
+                referenceLeakageRisk:
+                  best.verification?.referenceLeakageRisk,
                 retryCount:
                   best.retryCount,
                 outputSize,
@@ -4481,6 +4487,18 @@ async function handleImage(request, env) {
             best.verification?.requestFulfillment,
           artifactFree: best.verification?.artifactFree,
           textAccuracy: best.verification?.textAccuracy,
+          deterministicTextAccuracy:
+            best.verification?.deterministicTextAccuracy,
+          exactTextMatches:
+            best.verification?.exactTextMatches,
+          exactTextTotal:
+            best.verification?.exactTextTotal,
+          referenceVerified:
+            Boolean(best.verification?.referenceVerified),
+          referenceScore:
+            best.verification?.referenceScore,
+          referenceLeakageRisk:
+            best.verification?.referenceLeakageRisk,
           retries: best.retryCount,
           rootReferenceUsed: hasRootReference,
           extraReferencesUsed,
@@ -4570,6 +4588,44 @@ async function handleImage(request, env) {
                   : String(
                       best.verification
                         .textAccuracy
+                    ),
+              "X-Nexus-Deterministic-Text-Score":
+                best.verification
+                  ?.deterministicTextAccuracy == null
+                  ? ""
+                  : String(
+                      best.verification
+                        .deterministicTextAccuracy
+                    ),
+              "X-Nexus-Exact-Text-Matches":
+                best.verification?.exactTextMatches == null
+                  ? ""
+                  : String(
+                      best.verification.exactTextMatches
+                    ),
+              "X-Nexus-Exact-Text-Total":
+                best.verification?.exactTextTotal == null
+                  ? ""
+                  : String(
+                      best.verification.exactTextTotal
+                    ),
+              "X-Nexus-Reference-Verified":
+                best.verification?.referenceVerified
+                  ? "1"
+                  : "0",
+              "X-Nexus-Reference-Score":
+                best.verification?.referenceScore == null
+                  ? ""
+                  : String(
+                      best.verification.referenceScore
+                    ),
+              "X-Nexus-Reference-Leakage":
+                best.verification
+                  ?.referenceLeakageRisk == null
+                  ? ""
+                  : String(
+                      best.verification
+                        .referenceLeakageRisk
                     ),
               "X-Nexus-Visual-Retry":
                 String(best.retryCount || 0),
@@ -4819,6 +4875,18 @@ async function handleImage(request, env) {
         fallbackVerification.requestFulfillment,
       artifactFree: fallbackVerification.artifactFree,
       textAccuracy: fallbackVerification.textAccuracy,
+      deterministicTextAccuracy:
+        fallbackVerification.deterministicTextAccuracy,
+      exactTextMatches:
+        fallbackVerification.exactTextMatches,
+      exactTextTotal:
+        fallbackVerification.exactTextTotal,
+      referenceVerified:
+        Boolean(fallbackVerification.referenceVerified),
+      referenceScore:
+        fallbackVerification.referenceScore,
+      referenceLeakageRisk:
+        fallbackVerification.referenceLeakageRisk,
       retries: 0,
       rootReferenceUsed: false,
       extraReferencesUsed: 0,
@@ -4893,6 +4961,43 @@ async function handleImage(request, env) {
             : String(
                 fallbackVerification
                   .textAccuracy
+              ),
+        "X-Nexus-Deterministic-Text-Score":
+          fallbackVerification
+            .deterministicTextAccuracy == null
+            ? ""
+            : String(
+                fallbackVerification
+                  .deterministicTextAccuracy
+              ),
+        "X-Nexus-Exact-Text-Matches":
+          fallbackVerification.exactTextMatches == null
+            ? ""
+            : String(
+                fallbackVerification.exactTextMatches
+              ),
+        "X-Nexus-Exact-Text-Total":
+          fallbackVerification.exactTextTotal == null
+            ? ""
+            : String(
+                fallbackVerification.exactTextTotal
+              ),
+        "X-Nexus-Reference-Verified":
+          fallbackVerification.referenceVerified
+            ? "1"
+            : "0",
+        "X-Nexus-Reference-Score":
+          fallbackVerification.referenceScore == null
+            ? ""
+            : String(
+                fallbackVerification.referenceScore
+              ),
+        "X-Nexus-Reference-Leakage":
+          fallbackVerification.referenceLeakageRisk == null
+            ? ""
+            : String(
+                fallbackVerification
+                  .referenceLeakageRisk
               ),
         "X-Nexus-Visual-Retry": "0",
       },
