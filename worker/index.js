@@ -27,7 +27,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.8.1";
+const VERSION = "2.8.2";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -1015,6 +1015,7 @@ async function handleStatus(env) {
         failureAwareRetries: true,
         candidateArena: true,
         crossQualityCandidateSelection: true,
+        latencyOptimizedFastPath: true,
         maxImageReferences: 4,
       },
       toolRegistry: ["web_search", "calculator", "conversation_context"],
@@ -2101,6 +2102,109 @@ function cleanStringArray(value, max = 14, maxChars = 700) {
         .filter(Boolean)
         .slice(0, max)
     : [];
+}
+
+function buildFastVisualContext({
+  sourceDescription,
+  taskPlan,
+}) {
+  const description = String(sourceDescription || "").trim();
+
+  return {
+    subjectType: "",
+    subjectCount: null,
+    facePresent: null,
+    primarySubject: description.slice(0, 1800),
+    identityFeatures: [],
+    clothing: [],
+    pose: "",
+    framing: "",
+    background: "",
+    lighting: "",
+    style: "",
+    colors: [],
+    textElements: [],
+    protectedElements: [
+      "all unrequested content",
+      "main subject identity and facial appearance",
+      "body proportions and pose unless explicitly targeted",
+      "camera angle, framing and composition unless explicitly targeted",
+      "background, lighting and visual style unless explicitly targeted",
+    ],
+    editableElements: Array.isArray(taskPlan?.targets)
+      ? taskPlan.targets.slice(0, 12)
+      : [],
+    spatialAnchors: [],
+    riskAreas: Array.isArray(taskPlan?.riskFlags)
+      ? taskPlan.riskFlags.slice(0, 12)
+      : [
+          "identity drift",
+          "composition drift",
+          "unrequested changes",
+        ],
+  };
+}
+
+function shouldUseFullImagePreflight({
+  requestedQuality,
+  taskPlan,
+  hasSourceImage,
+  hasRootReference,
+  extraReferencesUsed,
+}) {
+  if (requestedQuality === "quality") return true;
+  if (hasRootReference) return true;
+  if (Number(extraReferencesUsed || 0) > 0) return true;
+  if (taskPlan?.requiresTextAccuracy) return true;
+  if (taskPlan?.mode === "identity_lock") return true;
+
+  return false;
+}
+
+function shouldVerifyFastImage({
+  hasSourceImage,
+  requestedQuality,
+  taskPlan,
+  manualExtraReferencesUsed,
+}) {
+  if (requestedQuality === "quality") return true;
+  if (hasSourceImage) return true;
+  if (taskPlan?.requiresTextAccuracy) return true;
+  if (Number(manualExtraReferencesUsed || 0) > 0) return true;
+  return false;
+}
+
+function shouldRetryFastImage(verification, taskPlan) {
+  if (!verification?.verified || verification.pass) return false;
+
+  const score = Number(verification.score);
+  const identity = Number(verification.identity);
+  const fulfillment = Number(verification.requestFulfillment);
+  const textAccuracy = Number(verification.textAccuracy);
+
+  if (Number.isFinite(score) && score < 0.58) return true;
+  if (
+    taskPlan?.requiresIdentityLock &&
+    Number.isFinite(identity) &&
+    identity < 0.72
+  ) {
+    return true;
+  }
+  if (
+    Number.isFinite(fulfillment) &&
+    fulfillment < 0.58
+  ) {
+    return true;
+  }
+  if (
+    taskPlan?.requiresTextAccuracy &&
+    Number.isFinite(textAccuracy) &&
+    textAccuracy < 0.7
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 async function classifyImageTask({
@@ -3953,14 +4057,48 @@ async function handleImage(request, env) {
   const learnedContextText =
     formatLearningContext(imageLearningContext);
 
-  const taskPlan = await classifyImageTask({
-    prompt,
-    hasSourceImage: Boolean(sourceImage),
-    previousPrompt,
-    learnedContext: learnedContextText,
-    sessionId,
-    env,
-  });
+  const localTaskPlan =
+    imageTaskFallback(
+      prompt,
+      Boolean(sourceImage)
+    );
+
+  const needsSemanticTaskRouter =
+    requestedQuality === "quality" ||
+    localTaskPlan.requiresTextAccuracy ||
+    hasRootReference ||
+    extraReferencesUsed > 0;
+
+  const taskPlan =
+    needsSemanticTaskRouter
+      ? await classifyImageTask({
+          prompt,
+          hasSourceImage:
+            Boolean(sourceImage),
+          previousPrompt,
+          learnedContext:
+            learnedContextText,
+          sessionId,
+          env,
+        })
+      : localTaskPlan;
+
+  const fullImagePreflight =
+    shouldUseFullImagePreflight({
+      requestedQuality,
+      taskPlan,
+      hasSourceImage:
+        Boolean(sourceImage),
+      hasRootReference,
+      extraReferencesUsed,
+    });
+
+  const imagePipelineProfile =
+    fullImagePreflight
+      ? "full-quality"
+      : sourceImage
+        ? "fast-edit"
+        : "fast-create";
 
   const imageCaseContext = await getImageCaseContext(
     env,
@@ -4028,44 +4166,79 @@ async function handleImage(request, env) {
   let expansion = { prompt, expanded: false, model: null };
 
   if (sourceImage && env.AI) {
-    sourceDescription = await describeVisualImage(
-      sourceImage,
-      env,
-      "imagem-original"
-    );
+    sourceDescription =
+      await describeVisualImage(
+        sourceImage,
+        env,
+        "imagem-original"
+      );
 
-    visualContext = await buildVisualContextV2({
-      sourceImage,
-      sourceDescription,
-      prompt,
-      taskPlan,
-      caseContext: imageCaseContextText,
-      referenceContext: referenceContextText,
-      sessionId,
-      env,
-    });
+    if (fullImagePreflight) {
+      visualContext =
+        await buildVisualContextV2({
+          sourceImage,
+          sourceDescription,
+          prompt,
+          taskPlan,
+          caseContext:
+            imageCaseContextText,
+          referenceContext:
+            referenceContextText,
+          sessionId,
+          env,
+        });
 
-    editSpec = await buildVisualEditSpec({
-      sourceDescription,
-      prompt,
-      previousPrompt,
-      taskPlan,
-      visualContext,
-      caseContext: imageCaseContextText,
-      referenceContext: referenceContextText,
-      sessionId,
-      env,
-    });
+      editSpec =
+        await buildVisualEditSpec({
+          sourceDescription,
+          prompt,
+          previousPrompt,
+          taskPlan,
+          visualContext,
+          caseContext:
+            imageCaseContextText,
+          referenceContext:
+            referenceContextText,
+          sessionId,
+          env,
+        });
+    } else {
+      visualContext =
+        buildFastVisualContext({
+          sourceDescription,
+          taskPlan,
+        });
+
+      editSpec =
+        await buildVisualEditSpec({
+          sourceDescription: "",
+          prompt,
+          previousPrompt,
+          taskPlan,
+          visualContext,
+          caseContext: "",
+          referenceContext: "",
+          sessionId,
+          env: {},
+        });
+    }
+  } else if (fullImagePreflight) {
+    expansion =
+      await expandCreativePrompt({
+        kind: "image",
+        prompt,
+        history,
+        previousPrompt,
+        hasSourceImage: false,
+        sessionId,
+        env,
+      });
   } else {
-    expansion = await expandCreativePrompt({
-      kind: "image",
+    expansion = {
       prompt,
-      history,
-      previousPrompt,
-      hasSourceImage: false,
-      sessionId,
-      env,
-    });
+      expanded: false,
+      model: null,
+    };
   }
 
   const basePromptForModel = sourceImage
@@ -4209,30 +4382,56 @@ async function handleImage(request, env) {
           { type: "image/jpeg" }
         );
 
+        const verifyThisCandidate =
+          shouldVerifyFastImage({
+            hasSourceImage:
+              Boolean(sourceImage),
+            requestedQuality,
+            taskPlan,
+            manualExtraReferencesUsed,
+          });
+
         let verification =
           recoveredFromCandidateArena
             ? bestRejectedAcrossRoutes.best.verification
-            : sourceImage
-              ? await verifyVisualEdit({
-                  originalBlob: sourceImage,
-                  rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
-                  originalDescription: sourceDescription,
-                  resultBlob: generatedBlob,
-                  prompt,
-                  spec: editSpec,
-                  taskPlan,
-                  visualContext,
-                  referenceContext: referenceContextText,
-                  sessionId,
-                  env,
-                })
-              : await verifyGeneratedImageV2({
-                  resultBlob: generatedBlob,
-                  prompt,
-                  taskPlan,
-                  sessionId,
-                  env,
-                });
+            : !verifyThisCandidate
+              ? {
+                  verified: false,
+                  pass: true,
+                  score: null,
+                  issues: [],
+                  unwantedChanges: [],
+                  retryInstruction: "",
+                }
+              : sourceImage
+                ? await verifyVisualEdit({
+                    originalBlob: sourceImage,
+                    rootReferenceBlob:
+                      hasRootReference
+                        ? rootReferenceImage
+                        : null,
+                    originalDescription:
+                      sourceDescription,
+                    resultBlob:
+                      generatedBlob,
+                    prompt,
+                    spec:
+                      editSpec,
+                    taskPlan,
+                    visualContext,
+                    referenceContext:
+                      referenceContextText,
+                    sessionId,
+                    env,
+                  })
+                : await verifyGeneratedImageV2({
+                    resultBlob:
+                      generatedBlob,
+                    prompt,
+                    taskPlan,
+                    sessionId,
+                    env,
+                  });
 
         if (
           !recoveredFromCandidateArena &&
@@ -4285,7 +4484,18 @@ async function handleImage(request, env) {
           recoveredFromCandidateArena
             ? 0
             : verification?.verified
-              ? (imageQuality === "quality" ? 3 : 1)
+              ? (
+                  imageQuality === "quality"
+                    ? 2
+                    : (
+                        shouldRetryFastImage(
+                          verification,
+                          taskPlan
+                        )
+                          ? 1
+                          : 0
+                      )
+                )
               : 0;
 
         while (
@@ -4778,6 +4988,10 @@ async function handleImage(request, env) {
               "Cache-Control": "no-store",
               "X-Nexus-Image-Mode": finalMode,
               "X-Nexus-Image-Task": finalMode,
+              "X-Nexus-Image-Pipeline":
+                imagePipelineProfile,
+              "X-Nexus-Image-Total-Ms":
+                String(Date.now() - startedAt),
               "X-Nexus-Image-Case-Id":
                 imageCase?.id || "",
               "X-Nexus-Preservation":
@@ -5199,6 +5413,10 @@ async function handleImage(request, env) {
         "Cache-Control": "no-store",
         "X-Nexus-Image-Mode": mode,
         "X-Nexus-Image-Task": mode,
+        "X-Nexus-Image-Pipeline":
+          imagePipelineProfile,
+        "X-Nexus-Image-Total-Ms":
+          String(Date.now() - startedAt),
         "X-Nexus-Image-Case-Id":
           imageCase?.id || "",
         "X-Nexus-Preservation":
