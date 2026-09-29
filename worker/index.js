@@ -2543,6 +2543,16 @@ function visualCandidateScore(verification, taskPlan) {
     verification.textAccuracy ??
     (taskPlan?.requiresTextAccuracy ? 0 : score)
   );
+  const referenceScore = Number(
+    verification.referenceVerified
+      ? verification.referenceScore
+      : score
+  );
+  const referenceLeakageRisk = Number(
+    verification.referenceVerified
+      ? verification.referenceLeakageRisk
+      : 0
+  );
 
   const preservationHeavy =
     ["maximum", "high"].includes(taskPlan?.preservationLevel);
@@ -2555,8 +2565,10 @@ function visualCandidateScore(verification, taskPlan) {
         composition * 0.12 +
         background * 0.08 +
         style * 0.07 +
-        artifactFree * 0.07 +
-        textAccuracy * 0.03
+        artifactFree * 0.05 +
+        textAccuracy * 0.03 +
+        referenceScore * 0.05 -
+        Math.max(0, Math.min(1, referenceLeakageRisk)) * 0.05
       )
     : (
         score * 0.28 +
@@ -2565,8 +2577,10 @@ function visualCandidateScore(verification, taskPlan) {
         composition * 0.08 +
         background * 0.04 +
         style * 0.07 +
-        artifactFree * 0.08 +
-        textAccuracy * 0.04
+        artifactFree * 0.07 +
+        textAccuracy * 0.04 +
+        referenceScore * 0.02 -
+        Math.max(0, Math.min(1, referenceLeakageRisk)) * 0.02
       );
 }
 
@@ -2823,6 +2837,216 @@ async function verifyVisualEdit({
     issues: cleanStringArray(parsed?.issues, 14),
     unwantedChanges: cleanStringArray(parsed?.unwantedChanges, 14),
     resultDescription,
+  };
+}
+
+
+
+async function verifySupplementaryReferenceCompliance({
+  resultBlob,
+  referenceImages = [],
+  referencePlan,
+  prompt,
+  taskPlan,
+  sessionId,
+  env,
+}) {
+  const planItems = Array.isArray(referencePlan?.references)
+    ? referencePlan.references.filter(
+        (item) => item?.source === "manual"
+      )
+    : [];
+
+  const pairs = planItems
+    .map((item, index) => ({
+      item,
+      blob: Array.isArray(referenceImages)
+        ? referenceImages[index]
+        : null,
+    }))
+    .filter(
+      ({ item, blob }) =>
+        blob &&
+        item &&
+        item.relevant !== false
+    )
+    .slice(0, 3);
+
+  if (!env.AI || !resultBlob || !pairs.length) {
+    return {
+      applicable: false,
+      verified: false,
+      score: null,
+      leakageRisk: null,
+      issues: [],
+      leakedAttributes: [],
+      retryInstruction: "",
+      perReference: [],
+    };
+  }
+
+  let resultDataUrl = "";
+  try {
+    resultDataUrl = await blobToDataUrlServer(resultBlob);
+  } catch {}
+
+  if (!resultDataUrl) {
+    return {
+      applicable: true,
+      verified: false,
+      score: null,
+      leakageRisk: null,
+      issues: [],
+      leakedAttributes: [],
+      retryInstruction: "",
+      perReference: [],
+    };
+  }
+
+  const content = [
+    {
+      type: "text",
+      text: [
+        "IMAGEM 0 = RESULTADO GERADO/EDITADO que deve ser auditado.",
+        "As imagens seguintes são REFERÊNCIAS MANUAIS do usuário.",
+        "Compare cada referência SOMENTE nos atributos declarados em useFor.",
+        "Atributos listados em avoid NÃO devem vazar para o resultado.",
+        "Não identifique pessoas reais. Compare apenas características visuais.",
+        "PEDIDO ATUAL: " + String(prompt || ""),
+        "IMAGE TASK PLAN: " + JSON.stringify(taskPlan || {}),
+        "REFERENCE PLAN: " + JSON.stringify(
+          pairs.map(({ item }) => ({
+            imageIndex: item.imageIndex,
+            role: item.role,
+            useFor: item.useFor || [],
+            avoid: item.avoid || [],
+            confidence: item.confidence,
+          }))
+        ),
+        "Retorne SOMENTE JSON válido:",
+        "{applicable:boolean,score:number,leakageRisk:number,perReference:[{imageIndex:number,score:number,matchedAttributes:string[],missingAttributes:string[],leakedAttributes:string[]}],issues:string[],leakedAttributes:string[],retryInstruction:string}.",
+        "score 1 = todos os atributos solicitados das referências foram usados corretamente.",
+        "leakageRisk 0 = nenhum atributo proibido vazou; 1 = vazamento grave de identidade/cenário/pose/estado não solicitado.",
+      ].join("\n\n"),
+    },
+    {
+      type: "image_url",
+      image_url: { url: resultDataUrl },
+    },
+  ];
+
+  for (const { item, blob } of pairs) {
+    let dataUrl = "";
+    try {
+      dataUrl = await blobToDataUrlServer(blob);
+    } catch {}
+    if (!dataUrl) continue;
+
+    content.push({
+      type: "text",
+      text:
+        "Agora veja a referência manual correspondente ao imageIndex " +
+        Number(item.imageIndex) +
+        ". Use apenas: " +
+        (item.useFor?.length ? item.useFor.join("; ") : "atributos relevantes ao pedido") +
+        ". Evite transferir: " +
+        (item.avoid?.length ? item.avoid.join("; ") : "atributos não solicitados") +
+        ".",
+    });
+    content.push({
+      type: "image_url",
+      image_url: { url: dataUrl },
+    });
+  }
+
+  const attempt = await runTextChat(
+    [
+      {
+        role: "system",
+        content: [
+          "Você é o Reference Compliance Verifier da NEXUS AI.",
+          "Sua função é detectar se referências visuais suplementares foram usadas corretamente sem vazamento de atributos.",
+          "Se a referência era para roupa, objeto, cor, material, cabelo ou estilo, avalie especificamente esse atributo.",
+          "Penalize transferência não solicitada de rosto, identidade, pessoa, pose, cenário, fundo, iluminação ou estado antigo.",
+          "Não premie mera semelhança geral; siga useFor e avoid.",
+        ].join(" "),
+      },
+      { role: "user", content },
+    ],
+    env,
+    {
+      cloudflareModel: env.CF_VISION_MODEL || CF_VISION_MODEL,
+      maxTokens: 1100,
+      temperature: 0.01,
+      topP: 0.68,
+      sessionId: sessionId
+        ? sessionId + "-reference-compliance"
+        : "",
+      cloudflareOnly: true,
+    }
+  );
+
+  if (!attempt?.ok) {
+    return {
+      applicable: true,
+      verified: false,
+      score: null,
+      leakageRisk: null,
+      issues: [],
+      leakedAttributes: [],
+      retryInstruction: "",
+      perReference: [],
+    };
+  }
+
+  const parsed = parseJsonLooseText(
+    extractModelText(attempt.raw),
+    {}
+  );
+  const clamp = (value, fallback = 0.5) =>
+    Math.max(
+      0,
+      Math.min(
+        1,
+        Number.isFinite(Number(value))
+          ? Number(value)
+          : fallback
+      )
+    );
+
+  const perReference = Array.isArray(parsed?.perReference)
+    ? parsed.perReference.slice(0, 3).map((item) => ({
+        imageIndex: Number(item?.imageIndex || 0),
+        score: clamp(item?.score),
+        matchedAttributes: cleanStringArray(
+          item?.matchedAttributes,
+          10
+        ),
+        missingAttributes: cleanStringArray(
+          item?.missingAttributes,
+          10
+        ),
+        leakedAttributes: cleanStringArray(
+          item?.leakedAttributes,
+          10
+        ),
+      }))
+    : [];
+
+  return {
+    applicable: parsed?.applicable !== false,
+    verified: true,
+    score: clamp(parsed?.score),
+    leakageRisk: clamp(parsed?.leakageRisk, 0),
+    issues: cleanStringArray(parsed?.issues, 14),
+    leakedAttributes: cleanStringArray(
+      parsed?.leakedAttributes,
+      14
+    ),
+    retryInstruction: String(
+      parsed?.retryInstruction || ""
+    ).slice(0, 3000),
+    perReference,
   };
 }
 
