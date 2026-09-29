@@ -4152,18 +4152,55 @@ async function handleImage(request, env) {
           taskMode: taskPlan.mode,
         });
 
-        let generated = await runCloudflareImage({
-          quality: imageQuality,
-          modelOverride: adaptiveModelForAttempt,
-          prompt: promptForModel,
-          sourceImage,
-          rootReferenceImage: hasRootReference ? rootReferenceImage : null,
-          extraReferenceImages,
-          width: outputSize.width,
-          height: outputSize.height,
-          editStrength: taskPlan.editStrength,
-          env,
-        });
+        let generated;
+        let recoveredFromCandidateArena = false;
+
+        try {
+          generated = await runCloudflareImage({
+            quality: imageQuality,
+            modelOverride: adaptiveModelForAttempt,
+            prompt: promptForModel,
+            sourceImage,
+            rootReferenceImage: hasRootReference ? rootReferenceImage : null,
+            extraReferenceImages,
+            width: outputSize.width,
+            height: outputSize.height,
+            editStrength: taskPlan.editStrength,
+            env,
+          });
+        } catch (routeError) {
+          if (
+            imageQuality === "fast" &&
+            bestRejectedAcrossRoutes
+          ) {
+            recoveredFromCandidateArena = true;
+            generated =
+              bestRejectedAcrossRoutes.best.generated;
+            cloudflareImageError =
+              routeError?.message ||
+              String(routeError);
+
+            const routeFailure =
+              classifyAdaptiveFailure(routeError);
+
+            await recordGlobalLearningOutcome(
+              env,
+              {
+                kind: "image",
+                provider: "cloudflare",
+                model:
+                  env.CF_IMAGE_FAST_MODEL ||
+                  CF_IMAGE_FAST_MODEL,
+                ok: false,
+                failureKind: routeFailure.kind,
+                latencyMs:
+                  Date.now() - startedAt,
+              }
+            );
+          } else {
+            throw routeError;
+          }
+        }
 
         let retryCount = 0;
         const generatedBlob = new Blob(
@@ -4171,29 +4208,33 @@ async function handleImage(request, env) {
           { type: "image/jpeg" }
         );
 
-        let verification = sourceImage
-          ? await verifyVisualEdit({
-              originalBlob: sourceImage,
-              rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
-              originalDescription: sourceDescription,
-              resultBlob: generatedBlob,
-              prompt,
-              spec: editSpec,
-              taskPlan,
-              visualContext,
-              referenceContext: referenceContextText,
-              sessionId,
-              env,
-            })
-          : await verifyGeneratedImageV2({
-              resultBlob: generatedBlob,
-              prompt,
-              taskPlan,
-              sessionId,
-              env,
-            });
+        let verification =
+          recoveredFromCandidateArena
+            ? bestRejectedAcrossRoutes.best.verification
+            : sourceImage
+              ? await verifyVisualEdit({
+                  originalBlob: sourceImage,
+                  rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
+                  originalDescription: sourceDescription,
+                  resultBlob: generatedBlob,
+                  prompt,
+                  spec: editSpec,
+                  taskPlan,
+                  visualContext,
+                  referenceContext: referenceContextText,
+                  sessionId,
+                  env,
+                })
+              : await verifyGeneratedImageV2({
+                  resultBlob: generatedBlob,
+                  prompt,
+                  taskPlan,
+                  sessionId,
+                  env,
+                });
 
         if (
+          !recoveredFromCandidateArena &&
           sourceImage &&
           manualExtraReferencesUsed > 0
         ) {
@@ -4240,9 +4281,11 @@ async function handleImage(request, env) {
         };
 
         const maxRetries =
-          verification?.verified
-            ? (imageQuality === "quality" ? 3 : 1)
-            : 0;
+          recoveredFromCandidateArena
+            ? 0
+            : verification?.verified
+              ? (imageQuality === "quality" ? 3 : 1)
+              : 0;
 
         while (
           retryCount < maxRetries &&
