@@ -2787,11 +2787,7 @@ async function verifyVisualEdit({
     };
   }
 
-  const resultDescription = await describeVisualImage(
-    resultBlob,
-    env,
-    "resultado-editado"
-  );
+  let resultDescription = "";
 
   let originalDataUrl = "";
   let rootReferenceDataUrl = "";
@@ -2890,6 +2886,22 @@ async function verifyVisualEdit({
         sessionId: sessionId ? sessionId + "-visual-verify-v2" : "",
         cloudflareOnly: true,
       }
+    );
+  }
+
+  if (!attempt?.ok) {
+    resultDescription = await describeVisualImage(
+      resultBlob,
+      env,
+      "resultado-editado"
+    );
+  }
+
+  if (!attempt?.ok) {
+    resultDescription = await describeVisualImage(
+      resultBlob,
+      env,
+      "imagem-gerada"
     );
   }
 
@@ -3248,11 +3260,7 @@ async function verifyGeneratedImageV2({
     };
   }
 
-  const resultDescription = await describeVisualImage(
-    resultBlob,
-    env,
-    "imagem-gerada"
-  );
+  let resultDescription = "";
 
   let dataUrl = "";
   try {
@@ -4486,7 +4494,12 @@ async function handleImage(request, env) {
             : verification?.verified
               ? (
                   imageQuality === "quality"
-                    ? 2
+                    ? (
+                        taskPlan?.requiresIdentityLock ||
+                        taskPlan?.requiresTextAccuracy
+                          ? 2
+                          : 1
+                      )
                     : (
                         shouldRetryFastImage(
                           verification,
@@ -4731,7 +4744,8 @@ async function handleImage(request, env) {
 
           if (
             imageQuality === "quality" &&
-            qualities.includes("fast")
+            qualities.includes("fast") &&
+            Number(best.candidateScore || 0) < 0.68
           ) {
             continue;
           }
