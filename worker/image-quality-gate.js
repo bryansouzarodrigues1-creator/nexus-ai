@@ -733,3 +733,94 @@ export function planImageRetryStrategy(
     promptHint: hints.join(" ").slice(0, 1200),
   };
 }
+
+
+export function selectBetterVisualCandidate(current, incoming) {
+  if (!current) return incoming || null;
+  if (!incoming) return current;
+
+  const currentBest = current?.best || current;
+  const incomingBest = incoming?.best || incoming;
+
+  const currentVerification =
+    currentBest?.verification &&
+    typeof currentBest.verification === "object"
+      ? currentBest.verification
+      : {};
+  const incomingVerification =
+    incomingBest?.verification &&
+    typeof incomingBest.verification === "object"
+      ? incomingBest.verification
+      : {};
+
+  const currentPass =
+    currentVerification.pass === true ? 1 : 0;
+  const incomingPass =
+    incomingVerification.pass === true ? 1 : 0;
+
+  if (incomingPass !== currentPass) {
+    return incomingPass > currentPass
+      ? incoming
+      : current;
+  }
+
+  const currentVerified =
+    currentVerification.verified === true ? 1 : 0;
+  const incomingVerified =
+    incomingVerification.verified === true ? 1 : 0;
+
+  if (incomingVerified !== currentVerified) {
+    return incomingVerified > currentVerified
+      ? incoming
+      : current;
+  }
+
+  const currentCandidateScore =
+    Number.isFinite(Number(currentBest?.candidateScore))
+      ? Number(currentBest.candidateScore)
+      : Number.isFinite(
+          Number(currentVerification?.qualityGateScore)
+        )
+        ? Number(currentVerification.qualityGateScore)
+        : Number(currentVerification?.score || 0);
+
+  const incomingCandidateScore =
+    Number.isFinite(Number(incomingBest?.candidateScore))
+      ? Number(incomingBest.candidateScore)
+      : Number.isFinite(
+          Number(incomingVerification?.qualityGateScore)
+        )
+        ? Number(incomingVerification.qualityGateScore)
+        : Number(incomingVerification?.score || 0);
+
+  if (
+    Math.abs(
+      incomingCandidateScore -
+      currentCandidateScore
+    ) > 1e-9
+  ) {
+    return incomingCandidateScore >
+      currentCandidateScore
+      ? incoming
+      : current;
+  }
+
+  const currentRetries =
+    Math.max(
+      0,
+      Number(currentBest?.retryCount || 0)
+    );
+  const incomingRetries =
+    Math.max(
+      0,
+      Number(incomingBest?.retryCount || 0)
+    );
+
+  if (incomingRetries !== currentRetries) {
+    return incomingRetries < currentRetries
+      ? incoming
+      : current;
+  }
+
+  return current;
+}
