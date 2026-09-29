@@ -373,7 +373,8 @@ function App(){
       if(!res.ok)throw new Error(data.error||'Falha ao salvar feedback.');
       updateMessage(tid,message.id,{
         feedback:signal,
-        feedbackLessonStored:Boolean(data.lessonStored)
+        feedbackLessonStored:Boolean(data.lessonStored),
+        feedbackCaseUpdated:Boolean(data.imageCaseFeedbackApplied)
       });
       return data;
     }catch{
@@ -1181,6 +1182,7 @@ function App(){
                     onClick={()=>submitMessageFeedback(m,i,'negative')}
                   ><ThumbsDown size={13}/></button>
                   {m.feedbackLessonStored&&<span>lição aprendida</span>}
+                  {m.feedbackCaseUpdated&&<span>caso visual atualizado</span>}
                 </div>}
                 {m.sources?.length>0&&<div className="sources">
                   {m.sources.slice(0,8).map((s,j)=><a href={s.url} target="_blank" rel="noreferrer" key={j}>{j+1}. {s.title||s.url}</a>)}
