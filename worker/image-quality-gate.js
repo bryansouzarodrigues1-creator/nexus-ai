@@ -186,3 +186,415 @@ export function fuseReferenceCompliance(baseVerification, referenceCompliance) {
     ].filter(Boolean).join(" ").slice(0, 3600),
   };
 }
+
+
+function finiteOr(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function metric(value, fallback = 0) {
+  return clamp01(finiteOr(value, fallback));
+}
+
+function addBlocker(blockers, code, value, threshold, priority, message) {
+  if (metric(value) >= threshold) return;
+  blockers.push({
+    code,
+    value: metric(value),
+    threshold: clamp01(threshold),
+    priority: Math.max(1, Math.min(10, Number(priority || 5))),
+    message: String(message || "").slice(0, 500),
+  });
+}
+
+export function evaluateImageQualityGate(
+  verification,
+  taskPlan = {}
+) {
+  const v =
+    verification && typeof verification === "object"
+      ? verification
+      : {};
+
+  if (v.verified !== true) {
+    return {
+      verified: false,
+      pass: true,
+      score: null,
+      blockers: [],
+      blockerCodes: [],
+      retryInstruction: "",
+      failureClass: "",
+    };
+  }
+
+  const mode = String(taskPlan?.mode || "create");
+  const preservation = String(
+    taskPlan?.preservationLevel || "medium"
+  );
+  const strict = preservation === "maximum";
+  const high = preservation === "high";
+  const requiresIdentity = Boolean(
+    taskPlan?.requiresIdentityLock
+  );
+  const requiresText = Boolean(
+    taskPlan?.requiresTextAccuracy
+  );
+
+  const overall = metric(v.score, 0.5);
+  const request = metric(
+    v.requestFulfillment,
+    overall
+  );
+  const identity = metric(v.identity, overall);
+  const composition = metric(
+    v.composition,
+    overall
+  );
+  const background = metric(
+    v.backgroundPreservation,
+    overall
+  );
+  const style = metric(
+    v.stylePreservation,
+    overall
+  );
+  const artifacts = metric(
+    v.artifactFree,
+    overall
+  );
+  const text = metric(
+    v.textAccuracy,
+    requiresText ? 0 : 1
+  );
+  const reference = v.referenceVerified
+    ? metric(v.referenceScore, 0.5)
+    : 1;
+  const leakage = v.referenceVerified
+    ? metric(v.referenceLeakageRisk, 0)
+    : 0;
+
+  const blockers = [];
+
+  addBlocker(
+    blockers,
+    "overall_quality",
+    overall,
+    strict ? 0.82 : high ? 0.79 : 0.76,
+    5,
+    "A qualidade visual global ficou abaixo do mínimo."
+  );
+
+  addBlocker(
+    blockers,
+    "request_fulfillment",
+    request,
+    mode === "create" || mode === "poster"
+      ? 0.78
+      : 0.74,
+    10,
+    "O resultado não cumpriu suficientemente o pedido."
+  );
+
+  addBlocker(
+    blockers,
+    "artifacts",
+    artifacts,
+    0.7,
+    8,
+    "Há artefatos, deformações ou inconsistências visuais."
+  );
+
+  if (requiresIdentity) {
+    addBlocker(
+      blockers,
+      "identity",
+      identity,
+      strict ? 0.88 : high ? 0.84 : 0.82,
+      10,
+      "A identidade visual do sujeito desviou da referência."
+    );
+  }
+
+  if (strict || high) {
+    addBlocker(
+      blockers,
+      "composition",
+      composition,
+      strict ? 0.8 : 0.74,
+      8,
+      "Enquadramento, geometria ou composição mudaram demais."
+    );
+    addBlocker(
+      blockers,
+      "background",
+      background,
+      strict ? 0.78 : 0.72,
+      7,
+      "O fundo mudou além do permitido."
+    );
+    addBlocker(
+      blockers,
+      "style",
+      style,
+      strict ? 0.78 : 0.72,
+      6,
+      "Iluminação ou estilo visual desviaram da referência."
+    );
+  }
+
+  if (requiresText) {
+    const exactTotal = Math.max(
+      0,
+      Number(v.exactTextTotal || 0)
+    );
+    const exactMatches = Math.max(
+      0,
+      Number(v.exactTextMatches || 0)
+    );
+
+    if (
+      exactTotal > 0 &&
+      exactMatches < exactTotal
+    ) {
+      blockers.push({
+        code: "exact_text",
+        value:
+          exactTotal > 0
+            ? clamp01(exactMatches / exactTotal)
+            : text,
+        threshold: 1,
+        priority: 10,
+        message:
+          "O texto obrigatório não foi reproduzido exatamente.",
+      });
+    } else {
+      addBlocker(
+        blockers,
+        "text_accuracy",
+        text,
+        0.9,
+        9,
+        "O texto da imagem não está fiel ao texto solicitado."
+      );
+    }
+  }
+
+  if (v.referenceVerified) {
+    addBlocker(
+      blockers,
+      "reference_compliance",
+      reference,
+      0.74,
+      9,
+      "A referência suplementar não foi aplicada corretamente."
+    );
+
+    if (leakage > 0.28) {
+      blockers.push({
+        code: "reference_leakage",
+        value: clamp01(1 - leakage),
+        threshold: 0.72,
+        priority: 9,
+        message:
+          "Atributos proibidos vazaram de uma referência suplementar.",
+      });
+    }
+  }
+
+  if (
+    v.pass === false &&
+    blockers.length === 0
+  ) {
+    blockers.push({
+      code: "verifier_reject",
+      value: overall,
+      threshold: overall,
+      priority: 5,
+      message:
+        "O verificador visual detectou uma falha não classificada.",
+    });
+  }
+
+  blockers.sort(
+    (a, b) =>
+      Number(b.priority || 0) -
+        Number(a.priority || 0) ||
+      Number(a.value || 0) -
+        Number(b.value || 0)
+  );
+
+  const weighted = strict || high
+    ? (
+        overall * 0.16 +
+        request * 0.24 +
+        identity * 0.22 +
+        composition * 0.11 +
+        background * 0.07 +
+        style * 0.06 +
+        artifacts * 0.07 +
+        text * 0.04 +
+        reference * 0.03 -
+        leakage * 0.05
+      )
+    : (
+        overall * 0.25 +
+        request * 0.31 +
+        identity * 0.08 +
+        composition * 0.07 +
+        background * 0.03 +
+        style * 0.05 +
+        artifacts * 0.1 +
+        text * 0.07 +
+        reference * 0.04 -
+        leakage * 0.03
+      );
+
+  const blockerPenalty = Math.min(
+    0.28,
+    blockers.reduce(
+      (sum, item) =>
+        sum +
+        Math.max(
+          0,
+          Number(item.threshold || 0) -
+            Number(item.value || 0)
+        ) *
+          (Number(item.priority || 5) / 10) *
+          0.24,
+      0
+    )
+  );
+
+  const score = clamp01(
+    weighted - blockerPenalty
+  );
+
+  const retryParts = [];
+  const codes = new Set(
+    blockers.map((item) => item.code)
+  );
+
+  if (
+    codes.has("identity")
+  ) {
+    retryParts.push(
+      "Restore the exact same subject identity, facial structure, hair, body proportions and recognizable traits from the authoritative reference."
+    );
+  }
+  if (
+    codes.has("request_fulfillment")
+  ) {
+    retryParts.push(
+      "Complete the user's requested change precisely; do not leave the requested target partially unchanged."
+    );
+  }
+  if (
+    codes.has("exact_text") ||
+    codes.has("text_accuracy")
+  ) {
+    retryParts.push(
+      "Reproduce every required text string exactly character-for-character, preserving accents, numbers, capitalization and punctuation."
+    );
+  }
+  if (
+    codes.has("reference_compliance")
+  ) {
+    retryParts.push(
+      "Use supplementary references only for their declared attributes and match those requested attributes more faithfully."
+    );
+  }
+  if (
+    codes.has("reference_leakage")
+  ) {
+    retryParts.push(
+      "Remove all unrequested identity, pose, clothing, background, lighting or scene attributes leaked from supplementary references."
+    );
+  }
+  if (
+    codes.has("composition")
+  ) {
+    retryParts.push(
+      "Restore the original framing, camera angle, geometry and spatial relationships."
+    );
+  }
+  if (
+    codes.has("background")
+  ) {
+    retryParts.push(
+      "Restore all background elements that were not explicitly requested to change."
+    );
+  }
+  if (
+    codes.has("style")
+  ) {
+    retryParts.push(
+      "Restore the original lighting, color treatment and visual style outside the requested edit."
+    );
+  }
+  if (
+    codes.has("artifacts")
+  ) {
+    retryParts.push(
+      "Remove distortions, warped anatomy, duplicated details, seams and other generation artifacts."
+    );
+  }
+
+  const modelRetry = String(
+    v.retryInstruction || ""
+  ).trim();
+
+  return {
+    verified: true,
+    pass: blockers.length === 0,
+    score,
+    blockers: blockers.slice(0, 10),
+    blockerCodes: blockers
+      .slice(0, 10)
+      .map((item) => item.code),
+    retryInstruction: [
+      ...retryParts.slice(0, 5),
+      modelRetry,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 4200),
+    failureClass:
+      blockers[0]?.code || "",
+  };
+}
+
+export function applyImageQualityGate(
+  verification,
+  taskPlan = {}
+) {
+  const base =
+    verification && typeof verification === "object"
+      ? { ...verification }
+      : {};
+
+  const gate = evaluateImageQualityGate(
+    base,
+    taskPlan
+  );
+
+  if (!gate.verified) {
+    return {
+      ...base,
+      qualityGate: gate,
+    };
+  }
+
+  return {
+    ...base,
+    pass: gate.pass,
+    qualityGate: gate,
+    qualityGateScore: gate.score,
+    qualityGateBlockers:
+      gate.blockerCodes,
+    retryInstruction:
+      gate.retryInstruction ||
+      String(base.retryInstruction || ""),
+  };
+}
