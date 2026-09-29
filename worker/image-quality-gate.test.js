@@ -4,6 +4,7 @@ import {
   fuseReferenceCompliance,
   evaluateImageQualityGate,
   applyImageQualityGate,
+  planImageRetryStrategy,
 } from "./image-quality-gate.js";
 
 {
@@ -230,3 +231,56 @@ import {
 }
 
 console.log("image-quality-gate tests passed");
+
+
+{
+  const plan = planImageRetryStrategy(
+    {
+      qualityGateBlockers: ["identity", "composition"],
+    },
+    { editStrength: 0.3 },
+    1
+  );
+  assert.equal(plan.retryClass, "preserve");
+  assert.ok(plan.editStrength < 0.3);
+}
+
+{
+  const plan = planImageRetryStrategy(
+    {
+      qualityGateBlockers: ["request_fulfillment"],
+    },
+    { editStrength: 0.22 },
+    2
+  );
+  assert.equal(plan.retryClass, "fulfill");
+  assert.ok(plan.editStrength > 0.22);
+}
+
+{
+  const plan = planImageRetryStrategy(
+    {
+      qualityGateBlockers: ["exact_text"],
+    },
+    { editStrength: 0.4 },
+    2
+  );
+  assert.equal(plan.retryClass, "text");
+  assert.equal(plan.editStrength, 0.4);
+}
+
+{
+  const plan = planImageRetryStrategy(
+    {
+      qualityGateBlockers: [
+        "request_fulfillment",
+        "reference_leakage",
+      ],
+    },
+    { editStrength: 0.35 },
+    1
+  );
+  assert.equal(plan.retryClass, "balanced");
+  assert.ok(plan.editStrength < 0.35);
+  assert.match(plan.promptHint, /supplementary references/i);
+}
