@@ -509,6 +509,14 @@ export class ConversationState extends DurableObject {
       requestFulfillment: clampScore(caseData.requestFulfillment),
       artifactFree: clampScore(caseData.artifactFree),
       textAccuracy: clampScore(caseData.textAccuracy),
+      referenceScore: clampScore(caseData.referenceScore),
+      referenceLeakageRisk: clampScore(caseData.referenceLeakageRisk),
+      exactTextMatches: Number.isFinite(Number(caseData.exactTextMatches))
+        ? Math.max(0, Math.min(20, Math.round(Number(caseData.exactTextMatches))))
+        : null,
+      exactTextTotal: Number.isFinite(Number(caseData.exactTextTotal))
+        ? Math.max(0, Math.min(20, Math.round(Number(caseData.exactTextTotal))))
+        : null,
       retries: Math.max(0, Math.min(5, Number(caseData.retries || 0))),
       rootReferenceUsed: Boolean(caseData.rootReferenceUsed),
       extraReferencesUsed: Math.max(
