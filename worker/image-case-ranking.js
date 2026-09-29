@@ -108,6 +108,18 @@ export function describeImageCaseRelevance(item, {
     Number.isFinite(Number(item?.referenceLeakageRisk))
       ? clamp01(item.referenceLeakageRisk)
       : 0;
+  const qualityGateScore =
+    Number.isFinite(Number(item?.qualityGateScore))
+      ? clamp01(item.qualityGateScore)
+      : null;
+  const qualityGatePass =
+    typeof item?.qualityGatePass === "boolean"
+      ? item.qualityGatePass
+      : null;
+  const qualityGateBlockers =
+    Array.isArray(item?.qualityGateBlockers)
+      ? item.qualityGateBlockers.length
+      : 0;
 
   const ageMs = Math.max(0, Number(now) - Number(item?.at || 0));
   const ageDays = ageMs / 86400000;
@@ -122,11 +134,14 @@ export function describeImageCaseRelevance(item, {
       fulfillment * 0.23 +
       identity * 0.15 +
       artifactFree * 0.1 +
-      deterministicTextAccuracy * 0.08 +
-      referenceScore * 0.08 +
-      pass * 0.07 +
-      verified * 0.03 -
-      referenceLeakageRisk * 0.08
+      deterministicTextAccuracy * 0.07 +
+      referenceScore * 0.07 +
+      (qualityGateScore == null ? score : qualityGateScore) * 0.09 +
+      pass * 0.06 +
+      verified * 0.02 +
+      (qualityGatePass === true ? 0.03 : 0) -
+      referenceLeakageRisk * 0.08 -
+      Math.min(0.1, qualityGateBlockers * 0.012)
   );
 
   const userSignal = String(item?.userSignal || "neutral");
