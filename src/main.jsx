@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
-import {wantsFreshImage,shouldContinueImageContext} from './image-context.js';
+import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory} from './image-context.js';
 
 const starterActions=[
   {icon:Globe2,label:'Pesquisar na web',mode:'search'},
@@ -715,6 +715,19 @@ function App(){
           .map(m=>m.content)
           .join(' -> ');
 
+        const imageScopedHistory=selectImageChainHistory(
+          currentThread?.messages||[],
+          imageChainId,
+          {
+            legacyContinuation:
+              Boolean(
+                continuePrevious &&
+                !previousImage?.imageChainId
+              ),
+            max:12
+          }
+        );
+
         const res=await fetch('/api/image',{
           method:'POST',
           headers:apiHeaders(),
@@ -723,7 +736,7 @@ function App(){
             sourceImage,
             rootReferenceImage,
             previousPrompt,
-            history:creativeHistory,
+            history:imageScopedHistory,
             sessionId:tid,
             sourceWidth:sourceDimensions?.width||0,
             sourceHeight:sourceDimensions?.height||0,
