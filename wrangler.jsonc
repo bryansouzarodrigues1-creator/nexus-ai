@@ -3,7 +3,9 @@
   "name": "nexus-ai",
   "main": "worker/index.js",
   "compatibility_date": "2026-09-28",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true
   },
@@ -21,7 +23,9 @@
   "migrations": [
     {
       "tag": "conversation-state-v1",
-      "new_sqlite_classes": ["ConversationState"]
+      "new_sqlite_classes": [
+        "ConversationState"
+      ]
     }
   ],
   "workflows": [
@@ -29,6 +33,15 @@
       "name": "nexus-agent",
       "binding": "NEXUS_AGENT",
       "class_name": "NexusAgentWorkflow",
+      "default_retention": {
+        "success_retention": "1 day",
+        "error_retention": "3 days"
+      }
+    },
+    {
+      "name": "nexus-image",
+      "binding": "NEXUS_IMAGE",
+      "class_name": "NexusImageWorkflow",
       "default_retention": {
         "success_retention": "1 day",
         "error_retention": "3 days"
