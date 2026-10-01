@@ -5,7 +5,11 @@ import {
   compactAdaptiveDecision,
   rankAdaptiveCandidates,
 } from "./adaptive-router.js";
-import { shouldPrioritizeImageFidelity } from "./image-routing-policy.js";
+import {
+  shouldPrioritizeImageFidelity,
+  shouldUseExpressImageEdit,
+  shouldVerifyFastImageCandidate,
+} from "./image-routing-policy.js";
 import { allocateImageReferenceSlots } from "./image-reference-policy.js";
 import {
   createReferenceSkeleton,
@@ -2187,12 +2191,16 @@ function shouldVerifyFastImage({
   requestedQuality,
   taskPlan,
   manualExtraReferencesUsed,
+  expressEdit = false,
 }) {
-  if (requestedQuality === "quality") return true;
-  if (hasSourceImage) return true;
-  if (taskPlan?.requiresTextAccuracy) return true;
-  if (Number(manualExtraReferencesUsed || 0) > 0) return true;
-  return false;
+  return shouldVerifyFastImageCandidate({
+    hasSourceImage,
+    requestedQuality,
+    taskMode: taskPlan?.mode || "create",
+    requiresTextAccuracy: Boolean(taskPlan?.requiresTextAccuracy),
+    manualExtraReferencesUsed,
+    expressEdit,
+  });
 }
 
 function shouldRetryFastImage(verification, taskPlan) {
@@ -4657,7 +4665,19 @@ async function handleImage(request, env) {
         })
       : localTaskPlan;
 
+  const expressImageEdit =
+    shouldUseExpressImageEdit({
+      prompt,
+      requestedQuality,
+      hasSourceImage: Boolean(sourceImage),
+      hasRootReference,
+      extraReferencesUsed,
+      taskMode: taskPlan.mode,
+      requiresTextAccuracy: Boolean(taskPlan.requiresTextAccuracy),
+    });
+
   const fullImagePreflight =
+    !expressImageEdit &&
     shouldUseFullImagePreflight({
       requestedQuality,
       taskPlan,
@@ -4668,11 +4688,13 @@ async function handleImage(request, env) {
     });
 
   const imagePipelineProfile =
-    fullImagePreflight
-      ? "full-quality"
-      : sourceImage
-        ? "fast-edit"
-        : "fast-create";
+    expressImageEdit
+      ? "express-edit"
+      : fullImagePreflight
+        ? "full-quality"
+        : sourceImage
+          ? "fast-edit"
+          : "fast-create";
 
   const imageCaseContext = await getImageCaseContext(
     env,
@@ -4697,15 +4719,35 @@ async function handleImage(request, env) {
     modelStats: modeAwareImageStats,
   };
 
-  const imageRoute = resolveAdaptiveImageRoute({
-    requestedQuality,
-    hasSourceImage: Boolean(sourceImage),
-    taskMode: taskPlan.mode,
-    preservationLevel: taskPlan.preservationLevel,
-    requiresTextAccuracy: taskPlan.requiresTextAccuracy,
-    learningContext: modeAwareImageLearningContext,
-    env,
-  });
+  const imageRoute =
+    expressImageEdit
+      ? {
+          quality: "fast",
+          model:
+            env.CF_IMAGE_FAST_MODEL ||
+            CF_IMAGE_FAST_MODEL,
+          adaptiveDecision: {
+            adaptive: false,
+            reason: "express-edit",
+            selected: {
+              model:
+                env.CF_IMAGE_FAST_MODEL ||
+                CF_IMAGE_FAST_MODEL,
+              provider: "cloudflare",
+              quality: "fast",
+              confidence: 1,
+            },
+          },
+        }
+      : resolveAdaptiveImageRoute({
+          requestedQuality,
+          hasSourceImage: Boolean(sourceImage),
+          taskMode: taskPlan.mode,
+          preservationLevel: taskPlan.preservationLevel,
+          requiresTextAccuracy: taskPlan.requiresTextAccuracy,
+          learningContext: modeAwareImageLearningContext,
+          env,
+        });
   const quality = imageRoute.quality;
 
   const supplementaryStartIndex =
@@ -4742,12 +4784,14 @@ async function handleImage(request, env) {
   let expansion = { prompt, expanded: false, model: null };
 
   if (sourceImage && cloudflareImageAvailable) {
-    sourceDescription =
-      await describeVisualImage(
-        sourceImage,
-        env,
-        "imagem-original"
-      );
+    if (!expressImageEdit) {
+      sourceDescription =
+        await describeVisualImage(
+          sourceImage,
+          env,
+          "imagem-original"
+        );
+    }
 
     if (fullImagePreflight) {
       visualContext =
@@ -4968,6 +5012,7 @@ async function handleImage(request, env) {
             requestedQuality,
             taskPlan,
             manualExtraReferencesUsed,
+            expressEdit: expressImageEdit,
           });
 
         let verification =
