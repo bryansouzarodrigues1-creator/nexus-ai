@@ -1,8 +1,39 @@
-# NEXUS AI v2.10
+# NEXUS AI v2.11
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
 A V2 deixou de ser apenas um roteador de modelos e passou a ter estado server-side, raciocínio durável multi-etapas, verificação, reparo e edição visual validada.
+
+## V2.11 — Fast & Resilient Images
+
+A V2.11 ataca os dois gargalos observados em uso real no celular: latência excessiva em edições simples e perda da conexão quando o app/tela é deixado durante a geração.
+
+### Express Edit
+
+Edições simples e localizadas em modo rápido podem entrar em `express-edit`:
+
+- usa o modelo rápido;
+- não executa descrição visual redundante antes da geração;
+- não executa verifier quando a tarefa é classificada como baixo risco;
+- mantém instruções rígidas de preservação no prompt;
+- casos com rosto/identidade, fundo, texto exato, qualidade máxima, referência raiz ou múltiplas referências continuam no pipeline completo.
+
+### Jobs idempotentes e recuperação móvel
+
+`POST /api/image/start` agora é idempotente por `taskId`.
+
+O frontend salva o payload do job no IndexedDB antes do primeiro envio. Se o navegador suspender ou interromper o POST ao sair da tela:
+
+1. o mesmo job é consultado ao voltar;
+2. se ele realmente não chegou ao servidor, o mesmo `taskId` é reenviado;
+3. o backend reutiliza um job existente em vez de duplicar a geração;
+4. falhas transitórias de `fetch` durante polling não são tratadas como falha definitiva.
+
+O artifact final continua no Durable Object até a persistência local ser confirmada.
+
+### Menos trabalho duplicado
+
+O pipeline de edição deixou de exigir descrição textual da imagem original antes de uma comparação visual direta. Descrições textuais agora são produzidas apenas como fallback se o Visual Verifier direto não conseguir executar.
 
 ## Image Provider Pool V2.10
 
