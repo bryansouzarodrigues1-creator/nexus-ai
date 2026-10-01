@@ -72,6 +72,48 @@ async function loadMedia(key){
   return blob;
 }
 
+function imageJobDraftKey(taskId){
+  return '__nexus_image_job_draft__:'+String(taskId||'');
+}
+
+async function saveImageJobDraft(taskId,payload){
+  if(!taskId||!payload)return false;
+  const db=await openMediaDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction('media','readwrite');
+    tx.objectStore('media').put(payload,imageJobDraftKey(taskId));
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+  });
+  db.close();
+  return true;
+}
+
+async function loadImageJobDraft(taskId){
+  if(!taskId)return null;
+  const db=await openMediaDb();
+  const value=await new Promise((resolve,reject)=>{
+    const tx=db.transaction('media','readonly');
+    const req=tx.objectStore('media').get(imageJobDraftKey(taskId));
+    req.onsuccess=()=>resolve(req.result||null);
+    req.onerror=()=>reject(req.error);
+  });
+  db.close();
+  return value;
+}
+
+async function deleteImageJobDraft(taskId){
+  if(!taskId)return;
+  const db=await openMediaDb();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction('media','readwrite');
+    tx.objectStore('media').delete(imageJobDraftKey(taskId));
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+  });
+  db.close();
+}
+
 async function mediaKeyAsDataUrl(key){
   if(!key)return null;
   try{
@@ -202,13 +244,23 @@ async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
   const started=Date.now();
   let delay=900;
   let notFoundCount=0;
+  let networkFailureCount=0;
 
   while(Date.now()-started<timeoutMs){
-    const res=await fetch(
-      '/api/image/jobs/'+encodeURIComponent(taskId)+
-      '?sessionId='+encodeURIComponent(sessionId),
-      {headers:{'x-nexus-client':getClientId()}}
-    );
+    let res=null;
+
+    try{
+      res=await fetch(
+        '/api/image/jobs/'+encodeURIComponent(taskId)+
+        '?sessionId='+encodeURIComponent(sessionId),
+        {headers:{'x-nexus-client':getClientId()}}
+      );
+      networkFailureCount=0;
+    }catch{
+      networkFailureCount+=1;
+      await sleep(Math.min(6000,1200+networkFailureCount*700));
+      continue;
+    }
 
     const data=await res.json().catch(()=>({}));
 
@@ -224,7 +276,7 @@ async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
         data.provider_error||
         'Não consegui consultar a geração de imagem.'
       );
-      error.imageJobStatus=res.status===404?'unknown':'network';
+      error.imageJobStatus=res.status===404?'missing':'network';
       throw error;
     }
 
@@ -265,6 +317,7 @@ async function fetchImageJobResult(taskId,sessionId){
 
 function ackImageJob(taskId,sessionId){
   if(!taskId||!sessionId)return;
+  void deleteImageJobDraft(taskId).catch(()=>{});
   void fetch(
     '/api/image/jobs/'+encodeURIComponent(taskId)+
     '/ack?sessionId='+encodeURIComponent(sessionId),
@@ -274,6 +327,46 @@ function ackImageJob(taskId,sessionId){
       body:'{}'
     }
   ).catch(()=>{});
+}
+
+async function restartImageJobFromDraft(taskId,sessionId){
+  const draft=await loadImageJobDraft(taskId).catch(()=>null);
+  if(!draft)return false;
+
+  let res=null;
+  try{
+    res=await fetch('/api/image/start',{
+      method:'POST',
+      headers:apiHeaders(),
+      body:JSON.stringify({
+        ...draft,
+        taskId,
+        sessionId
+      })
+    });
+  }catch{
+    return false;
+  }
+
+  const data=await res.json().catch(()=>({}));
+
+  if(res.ok)return true;
+
+  if(
+    res.status===409&&
+    (
+      data.error_kind==='image-job-terminal'||
+      data.error_kind==='image-job-consumed'
+    )
+  ){
+    const error=new Error(
+      data.error||'O job de imagem já terminou.'
+    );
+    error.imageJobStatus='errored';
+    throw error;
+  }
+
+  return false;
 }
 
 function detectExplicitMediaIntent(text){
@@ -748,7 +841,28 @@ function App(){
         content:'Gerando imagem em segundo plano… você pode sair desta conversa.'
       });
 
-      await pollImageJob(jobId,tid);
+      try{
+        await pollImageJob(jobId,tid);
+      }catch(e){
+        if(e?.imageJobStatus!=='missing')throw e;
+
+        updateMessage(tid,message.id,{
+          imageJobStatus:'starting',
+          content:'Reconectando o job de imagem…'
+        });
+
+        const restarted=await restartImageJobFromDraft(jobId,tid);
+        if(!restarted){
+          const pending=new Error(
+            'O envio ainda não foi confirmado. A NEXUS tentará novamente quando a conexão/tela voltar.'
+          );
+          pending.imageJobStatus='pending';
+          throw pending;
+        }
+
+        await pollImageJob(jobId,tid);
+      }
+
       const res=await fetchImageJobResult(jobId,tid);
 
       await consumeImageResponse({
@@ -768,7 +882,7 @@ function App(){
       }else{
         updateMessage(tid,message.id,{
           imageJobStatus:'pending',
-          content:'A geração continua em segundo plano. Vou recuperar a imagem quando a conexão/tela voltar.'
+          content:'A geração continua em segundo plano. Vou recuperar ou reenviar o mesmo job quando a conexão/tela voltar.'
         });
       }
     }finally{
@@ -1232,15 +1346,24 @@ function App(){
 
           setBusy(false);
 
+          const durableImagePayload={
+            ...imagePayload,
+            taskId:imageJobId
+          };
+
+          try{
+            await saveImageJobDraft(
+              imageJobId,
+              durableImagePayload
+            );
+          }catch{}
+
           let startRes=null;
           try{
             startRes=await fetch('/api/image/start',{
               method:'POST',
               headers:apiHeaders(),
-              body:JSON.stringify({
-                ...imagePayload,
-                taskId:imageJobId
-              })
+              body:JSON.stringify(durableImagePayload)
             });
           }catch{
             updateMessage(tid,pendingMessage.id,{
@@ -1271,6 +1394,7 @@ function App(){
             startRes.status===503 &&
             startData.error_kind==='image-workflow-unavailable'
           ){
+            void deleteImageJobDraft(imageJobId).catch(()=>{});
             removeMessage(tid,pendingMessage.id);
           }else{
             updateMessage(tid,pendingMessage.id,{
