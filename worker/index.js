@@ -2478,7 +2478,7 @@ async function buildVisualEditSpec({
   sessionId,
   env,
 }) {
-  if (!sourceDescription || !env.AI) {
+  if ((!sourceDescription && !visualContext) || !env.AI) {
     return {
       operationType: taskPlan?.mode || "strict_edit",
       targetChange: taskPlan?.targets || [String(prompt || "")],
@@ -2531,7 +2531,9 @@ async function buildVisualEditSpec({
       {
         role: "user",
         content: [
-          "DESCRIÇÃO ORIGINAL:\n" + sourceDescription,
+          sourceDescription
+            ? "DESCRIÇÃO ORIGINAL:\n" + sourceDescription
+            : "",
           "CONTEXTO VISUAL ESTRUTURADO:\n" + JSON.stringify(visualContext || {}),
           "IMAGE TASK PLAN:\n" + JSON.stringify(taskPlan || {}),
           "PEDIDO ATUAL:\n" + prompt,
@@ -2805,7 +2807,11 @@ async function verifyVisualEdit({
   sessionId,
   env,
 }) {
-  if (!env.AI || !originalDescription || !resultBlob) {
+  if (
+    !env.AI ||
+    (!originalBlob && !originalDescription) ||
+    !resultBlob
+  ) {
     return {
       verified: false,
       pass: true,
@@ -2919,22 +2925,26 @@ async function verifyVisualEdit({
   }
 
   if (!attempt?.ok) {
+    if (!originalDescription && originalBlob) {
+      originalDescription = await describeVisualImage(
+        originalBlob,
+        env,
+        "imagem-original-fallback"
+      );
+    }
+
     resultDescription = await describeVisualImage(
       resultBlob,
       env,
-      "resultado-editado"
+      "resultado-editado-fallback"
     );
   }
 
-  if (!attempt?.ok) {
-    resultDescription = await describeVisualImage(
-      resultBlob,
-      env,
-      "imagem-gerada"
-    );
-  }
-
-  if (!attempt?.ok && resultDescription) {
+  if (
+    !attempt?.ok &&
+    originalDescription &&
+    resultDescription
+  ) {
     attempt = await runTextChat(
       [
         {
@@ -4784,20 +4794,11 @@ async function handleImage(request, env) {
   let expansion = { prompt, expanded: false, model: null };
 
   if (sourceImage && cloudflareImageAvailable) {
-    if (!expressImageEdit) {
-      sourceDescription =
-        await describeVisualImage(
-          sourceImage,
-          env,
-          "imagem-original"
-        );
-    }
-
     if (fullImagePreflight) {
       visualContext =
         await buildVisualContextV2({
           sourceImage,
-          sourceDescription,
+          sourceDescription: "",
           prompt,
           taskPlan,
           caseContext:
@@ -4810,7 +4811,7 @@ async function handleImage(request, env) {
 
       editSpec =
         await buildVisualEditSpec({
-          sourceDescription,
+          sourceDescription: "",
           prompt,
           previousPrompt,
           taskPlan,
