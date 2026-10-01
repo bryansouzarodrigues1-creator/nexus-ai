@@ -6406,6 +6406,86 @@ async function handleImageStart(request, env) {
       ? requestedTaskId
       : crypto.randomUUID();
 
+  async function existingJobResponse() {
+    const [task, artifactMeta] = await Promise.all([
+      stub.getTask(taskId),
+      stub.getTaskArtifactMeta(taskId),
+    ]);
+
+    if (!task && !artifactMeta) return null;
+
+    if (artifactMeta) {
+      return json(
+        {
+          id: taskId,
+          taskId,
+          status: "complete",
+          ready: true,
+          route: "image-workflow",
+          resumable: true,
+          idempotent: true,
+        },
+        200
+      );
+    }
+
+    const taskStatus = String(task?.status || "");
+
+    if (
+      taskStatus === "errored" ||
+      taskStatus === "terminated"
+    ) {
+      return json(
+        {
+          error:
+            task?.error ||
+            "Este job de imagem já terminou com erro.",
+          error_kind: "image-job-terminal",
+          taskId,
+          status: taskStatus,
+        },
+        409
+      );
+    }
+
+    if (taskStatus === "consumed") {
+      return json(
+        {
+          error:
+            "Este job já foi consumido pelo cliente.",
+          error_kind: "image-job-consumed",
+          taskId,
+          status: taskStatus,
+        },
+        409
+      );
+    }
+
+    try {
+      const instance = await env.NEXUS_IMAGE.get(taskId);
+      const details = await instance.status();
+      if (details?.status) {
+        return json(
+          {
+            id: taskId,
+            taskId,
+            status: details.status,
+            ready: false,
+            route: "image-workflow",
+            resumable: true,
+            idempotent: true,
+          },
+          202
+        );
+      }
+    } catch {}
+
+    return null;
+  }
+
+  const existing = await existingJobResponse();
+  if (existing) return existing;
+
   const payloadText = JSON.stringify({
     ...body,
     taskId,
@@ -6439,10 +6519,31 @@ async function handleImageStart(request, env) {
         status: "queued",
         route: "image-workflow",
         resumable: true,
+        idempotent: false,
       },
       202
     );
   } catch (error) {
+    // Uma repetição do mesmo POST pode disputar com a primeira criação.
+    // Antes de marcar erro, confirme se o workflow já existe.
+    try {
+      const instance = await env.NEXUS_IMAGE.get(taskId);
+      const details = await instance.status();
+      if (details?.status) {
+        return json(
+          {
+            id: taskId,
+            taskId,
+            status: details.status,
+            route: "image-workflow",
+            resumable: true,
+            idempotent: true,
+          },
+          202
+        );
+      }
+    } catch {}
+
     try {
       await stub.setTask(taskId, {
         status: "errored",
