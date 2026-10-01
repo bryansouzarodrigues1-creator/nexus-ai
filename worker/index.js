@@ -32,7 +32,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.10.0";
+const VERSION = "2.11.0";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -995,6 +995,13 @@ async function handleStatus(env) {
       agentWorkflow: Boolean(env.NEXUS_AGENT),
       orchestration: "router+durable-state+planner-solver-critic-verifier",
       visualEditing: "image-task-router+visual-context-v2+edit-spec-v2+generation-and-edit-verifier+best-of-three-retry",
+      imagePerformance: {
+        resumableJobs: Boolean(env.NEXUS_IMAGE),
+        idempotentStarts: true,
+        clientDraftRecovery: true,
+        expressEdit: true,
+        redundantDescriptionEliminated: true,
+      },
       imageIntelligence: {
         taskRouter: true,
         visualContextV2: true,
