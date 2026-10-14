@@ -1619,6 +1619,15 @@ async function runCloudflareChat(model, messages, env, options = {}) {
     }
 
     const data = await env.AI.run(model, payload, runOptions);
+    if (!extractModelText(data)) {
+      return {
+        ok: false,
+        status: 502,
+        raw: "O modelo retornou uma resposta vazia ou incompatível.",
+        model,
+        provider: "cloudflare",
+      };
+    }
 
     return {
       ok: true,
@@ -2711,6 +2720,7 @@ function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContex
     isPoster
       ? "GRAPHIC DESIGN / POSTER MODE. Build clear visual hierarchy, intentional spacing, strong focal point and professional composition."
       : "IMAGE GENERATION MODE. Follow the requested subject, composition, style and details precisely without adding unrelated elements.",
+    "USER REQUEST IS THE SOURCE OF TRUTH. Treat specified subject count, object identity, position, pose, colors, clothing, background, perspective, format and style as fixed requirements. Do not substitute people for animals, merge distinct subjects, invent text, or add objects the user did not ask for.",
     taskPlan?.requiresTextAccuracy
       ? "Any user-specified text must be copied exactly, character for character. Do not invent extra copy."
       : "",
@@ -4414,7 +4424,10 @@ async function handleChat(request, env) {
   } else {
     attempt = await runTextChat(buildMessages(userText), env, {
       cloudflareModel: route.model,
-      maxTokens: route.maxTokens,
+      maxTokens:
+        route.key === "general" && !attachment && message.length <= 160
+          ? Math.min(route.maxTokens, 700)
+          : route.maxTokens,
       temperature: route.key === "deep" ? 0.45 : 0.68,
       topP: 0.94,
       reasoningEffort: route.reasoningEffort,
@@ -4623,8 +4636,11 @@ async function handleImage(request, env) {
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
-  const imageProviderHealth =
-    await getImageProviderHealth(env);
+  // Avoid serial Durable Object lookups before image generation.
+  const [imageProviderHealth, imageLearningContext] = await Promise.all([
+    getImageProviderHealth(env),
+    getLearningContext(env, "image"),
+  ]);
   const cloudflareImageAvailable =
     Boolean(env.AI) &&
     imageProviderIsAvailable(
@@ -4650,8 +4666,6 @@ async function handleImage(request, env) {
     );
   }
 
-  const imageLearningContext =
-    await getLearningContext(env, "image");
   const learnedContextText =
     formatLearningContext(imageLearningContext);
 
@@ -7906,6 +7920,15 @@ export default {
 
       if (url.pathname === "/api/video" && request.method === "POST")
         return handleVideo(request, env);
+
+      if (url.pathname.startsWith("/api/")) {
+        return json({
+          error: "Rota da API não encontrada. Atualize a NEXUS e tente novamente.",
+          error_kind: "unknown-api-route",
+          path: url.pathname,
+          version: VERSION,
+        }, 404);
+      }
 
       return env.ASSETS.fetch(request);
     } catch (error) {
