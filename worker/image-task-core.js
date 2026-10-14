@@ -42,7 +42,7 @@ export function extractExactRequestedText(prompt, limit = 8) {
   // expressão está claramente em caixa alta/números. Isso evita transformar
   // o restante de um prompt normal em copy obrigatória.
   for (const match of source.matchAll(
-    /\b(?:escreva|coloque)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s$€£%.,:+\-]{2,100})(?=$|[;!?])/g
+    /\b(?:escreva|coloque)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s$€£%.,:+\-]{2,100})(?=$|[;!?])/gi
   )) {
     const candidate = clean(match?.[1]);
     const letters = candidate.replace(
@@ -67,7 +67,16 @@ export function inferNaturalAspectRatio(prompt, fallback = null) {
     text.match(/\b(1:1|16:9|9:16|4:5|5:4|3:2|2:3)\b/)?.[1];
   if (explicit) return explicit;
 
-  if (/\b(story|stories|reels?|tiktok|vertical|9x16)\b/i.test(text)) {
+  // Platform-specific intent takes priority over generic orientation.
+  if (/\b(story|stories|reels?|tiktok|9x16)\b/i.test(text)) {
+    return "9:16";
+  }
+
+  if (/\b(feed|instagram|post vertical|4x5)\b/i.test(text)) {
+    return "4:5";
+  }
+
+  if (/\b(vertical)\b/i.test(text)) {
     return "9:16";
   }
 
@@ -77,10 +86,6 @@ export function inferNaturalAspectRatio(prompt, fallback = null) {
     )
   ) {
     return "16:9";
-  }
-
-  if (/\b(feed|instagram|post vertical|4x5)\b/i.test(text)) {
-    return "4:5";
   }
 
   if (/\b(avatar|perfil|quadrad[oa]|square)\b/i.test(text)) {

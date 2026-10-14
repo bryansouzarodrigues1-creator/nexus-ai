@@ -3,7 +3,7 @@ const STOPWORDS = new Set([
   "em","no","na","nos","nas","para","por","com","sem","que","isso","isto","essa",
   "esse","esta","este","meu","minha","seu","sua","mais","menos","muito","muita",
   "mudar","mude","trocar","troque","fazer","faça","faca","criar","crie","gere",
-  "imagem","foto","picture","image","the","and","with","without","for","from","this",
+  "imagem","foto","picture","image","apenas","somente","the","and","with","without","for","from","this",
   "that","make","create","generate","edit","change"
 ]);
 

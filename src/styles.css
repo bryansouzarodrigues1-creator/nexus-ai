@@ -110,3 +110,10 @@ video.generated{width:min(720px,100%)}
 .image-job-state.pending{border-color:#3a3447}
 .image-job-state.running,.image-job-state.starting{border-color:#2d3c4d}
 .image-job-state.errored{border-color:#573336;background:#211416;color:#db9696}
+
+/* NEXUS 2.12: choose latency or fidelity without hiding the trade-off. */
+.image-quality-switch{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 8px 2px;font-size:12px}
+.image-quality-switch span{opacity:.7;margin-right:4px;font-weight:600}
+.image-quality-switch button{border:1px solid var(--border,rgba(160,160,160,.28));background:transparent;color:inherit;border-radius:12px;padding:6px 9px;font-size:12px;cursor:pointer;transition:background .15s,border-color .15s}
+.image-quality-switch button.selected{background:rgba(116,130,255,.16);border-color:rgba(135,145,255,.6);font-weight:700}
+.image-quality-switch button:focus-visible{outline:2px solid currentColor;outline-offset:2px}

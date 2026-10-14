@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { rankImageCases } from "./image-case-ranking.js";
+import { selectRelevantLessons } from "./lesson-relevance.js";
 
 const MAX_EVENTS = 120;
 const MAX_TASKS = 40;
@@ -592,28 +593,19 @@ export class ConversationState extends DurableObject {
     return { ok: true, lesson: item };
   }
 
-  async getLearningContext(taskType = "general") {
+  async getLearningContext(taskType = "general", request = "") {
     const kind = cleanLearningKind(taskType);
     const [lessons, modelStats] = await Promise.all([
       this.ctx.storage.get("lessons"),
       this.ctx.storage.get("modelStats"),
     ]);
 
-    const relevantLessons = (Array.isArray(lessons) ? lessons : [])
-      .filter((item) => item?.taskType === kind || item?.taskType === "general")
-      .sort((a, b) => {
-        const confidenceDiff =
-          Number(b?.confidence || 0) - Number(a?.confidence || 0);
-        return confidenceDiff || Number(b?.at || 0) - Number(a?.at || 0);
-      })
-      .slice(0, 8)
-      .map((item) => ({
-        taskType: item.taskType,
-        trigger: item.trigger,
-        guidance: item.guidance,
-        confidence: item.confidence,
-        signal: item.signal,
-      }));
+    const relevantLessons = selectRelevantLessons(
+      (Array.isArray(lessons) ? lessons : [])
+        .filter((item) => item?.taskType === kind || item?.taskType === "general"),
+      String(request || "").slice(0, 4000),
+      8
+    );
 
     const relevantStats = Object.values(
       modelStats && typeof modelStats === "object" ? modelStats : {}

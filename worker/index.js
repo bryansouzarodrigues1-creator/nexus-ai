@@ -182,11 +182,11 @@ function learningStub(env) {
   }
 }
 
-async function getLearningContext(env, taskType = "general") {
+async function getLearningContext(env, taskType = "general", request = "") {
   const stub = learningStub(env);
   if (!stub) return { taskType, lessons: [], modelStats: [] };
   try {
-    return await stub.getLearningContext(taskType);
+    return await stub.getLearningContext(taskType, String(request || "").slice(0, 4000));
   } catch {
     return { taskType, lessons: [], modelStats: [] };
   }
@@ -194,44 +194,20 @@ async function getLearningContext(env, taskType = "general") {
 
 function formatLearningContext(context) {
   const lessons = Array.isArray(context?.lessons) ? context.lessons : [];
-  const stats = Array.isArray(context?.modelStats) ? context.modelStats : [];
-  if (!lessons.length && !stats.length) return "";
-
-  const parts = [];
-  if (lessons.length) {
-    parts.push(
-      "LIÇÕES APRENDIDAS DE INTERAÇÕES ANTERIORES:\n" +
-      lessons
-        .map((item, i) =>
-          (i + 1) + ". " +
-          (item?.trigger ? "Quando " + item.trigger + ": " : "") +
-          String(item?.guidance || "")
-        )
-        .join("\n")
-    );
-  }
-
-  if (stats.length) {
-    parts.push(
-      "DESEMPENHO HISTÓRICO DE MODELOS/PROVEDORES:\n" +
-      stats
-        .slice(0, 5)
-        .map((item) =>
-          [
-            item?.model || "modelo",
-            item?.provider || "provider",
-            "success=" + Math.round(Number(item?.successRate || 0) * 100) + "%",
-            item?.explicitApproval == null
-              ? ""
-              : "aprovação=" + Math.round(Number(item.explicitApproval) * 100) + "%",
-            "score=" + Math.round(Number(item?.avgScore || 0) * 100) + "%",
-          ].filter(Boolean).join(" · ")
-        )
-        .join("\n")
-    );
-  }
-
-  return parts.join("\n\n").slice(0, 9000);
+  if (!lessons.length) return "";
+  // Performance statistics belong to the router, not to the conversational
+  // system prompt. Keep the inference context small and task-specific.
+  return (
+    "LIÇÕES RELEVANTES PARA ESTE PEDIDO (não são fatos do mundo):\n" +
+    lessons
+      .slice(0, 6)
+      .map((item, i) =>
+        (i + 1) + ". " +
+        (item?.trigger ? "Quando " + item.trigger + ": " : "") +
+        String(item?.guidance || "")
+      )
+      .join("\n")
+  ).slice(0, 4200);
 }
 
 async function recordGlobalLearningOutcome(env, outcome = {}) {
@@ -1619,6 +1595,15 @@ async function runCloudflareChat(model, messages, env, options = {}) {
     }
 
     const data = await env.AI.run(model, payload, runOptions);
+    if (!extractModelText(data)) {
+      return {
+        ok: false,
+        status: 502,
+        raw: "O modelo retornou uma resposta vazia ou incompatível.",
+        model,
+        provider: "cloudflare",
+      };
+    }
 
     return {
       ok: true,
@@ -2515,7 +2500,7 @@ async function buildVisualEditSpec({
   }
 
   const learnedContext = formatLearningContext(
-    await getLearningContext(env, "image")
+    await getLearningContext(env, "image", prompt)
   );
 
   const attempt = await runTextChat(
@@ -2711,6 +2696,7 @@ function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContex
     isPoster
       ? "GRAPHIC DESIGN / POSTER MODE. Build clear visual hierarchy, intentional spacing, strong focal point and professional composition."
       : "IMAGE GENERATION MODE. Follow the requested subject, composition, style and details precisely without adding unrelated elements.",
+    "USER REQUEST IS THE SOURCE OF TRUTH. Treat specified subject count, object identity, position, pose, colors, clothing, background, perspective, format and style as fixed requirements. Do not substitute people for animals, merge distinct subjects, invent text, or add objects the user did not ask for.",
     taskPlan?.requiresTextAccuracy
       ? "Any user-specified text must be copied exactly, character for character. Do not invent extra copy."
       : "",
@@ -4192,7 +4178,7 @@ async function handleChat(request, env) {
         : baseRoute.key === "vision"
           ? "vision"
           : "chat";
-  const learningContext = await getLearningContext(env, learningKind);
+  const learningContext = await getLearningContext(env, learningKind, message);
   const route = resolveAdaptiveChatRoute(
     baseRoute,
     learningContext,
@@ -4414,7 +4400,10 @@ async function handleChat(request, env) {
   } else {
     attempt = await runTextChat(buildMessages(userText), env, {
       cloudflareModel: route.model,
-      maxTokens: route.maxTokens,
+      maxTokens:
+        route.key === "general" && !attachment && message.length <= 160
+          ? Math.min(route.maxTokens, 700)
+          : route.maxTokens,
       temperature: route.key === "deep" ? 0.45 : 0.68,
       topP: 0.94,
       reasoningEffort: route.reasoningEffort,
@@ -4623,8 +4612,11 @@ async function handleImage(request, env) {
 
   if (!prompt) return json({ error: "Prompt vazio." }, 400);
 
-  const imageProviderHealth =
-    await getImageProviderHealth(env);
+  // Avoid serial Durable Object lookups before image generation.
+  const [imageProviderHealth, imageLearningContext] = await Promise.all([
+    getImageProviderHealth(env),
+    getLearningContext(env, "image", prompt),
+  ]);
   const cloudflareImageAvailable =
     Boolean(env.AI) &&
     imageProviderIsAvailable(
@@ -4650,8 +4642,6 @@ async function handleImage(request, env) {
     );
   }
 
-  const imageLearningContext =
-    await getLearningContext(env, "image");
   const learnedContextText =
     formatLearningContext(imageLearningContext);
 
@@ -6841,7 +6831,7 @@ async function buildVideoPlan({
   env,
 }) {
   const learnedContext = formatLearningContext(
-    await getLearningContext(env, "video")
+    await getLearningContext(env, "video", prompt)
   );
 
   const fallback = {
@@ -7906,6 +7896,15 @@ export default {
 
       if (url.pathname === "/api/video" && request.method === "POST")
         return handleVideo(request, env);
+
+      if (url.pathname.startsWith("/api/")) {
+        return json({
+          error: "Rota da API não encontrada. Atualize a NEXUS e tente novamente.",
+          error_kind: "unknown-api-route",
+          path: url.pathname,
+          version: VERSION,
+        }, 404);
+      }
 
       return env.ASSETS.fetch(request);
     } catch (error) {

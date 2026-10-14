@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
+import {readApiJson} from './api-response.js';
 import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory,selectApprovedChainReferenceKeys} from './image-context.js';
 
 const starterActions=[
@@ -216,7 +217,7 @@ async function waitForAgent(taskId){
     const res=await fetch('/api/agent/'+encodeURIComponent(taskId),{
       headers:{'x-nexus-client':getClientId()}
     });
-    const data=await res.json();
+    const data=await readApiJson(res,'consultar a tarefa');
 
     if(!res.ok){
       throw new Error(data.error||data.provider_error||'Falha ao consultar o agente.');
@@ -262,7 +263,7 @@ async function pollImageJob(taskId,sessionId,timeoutMs=10*60*1000){
       continue;
     }
 
-    const data=await res.json().catch(()=>({}));
+    const data=await readApiJson(res,'consultar a tarefa');
 
     if(!res.ok){
       if(res.status===404&&notFoundCount<4){
@@ -348,7 +349,7 @@ async function restartImageJobFromDraft(taskId,sessionId){
     return false;
   }
 
-  const data=await res.json().catch(()=>({}));
+  const data=await readApiJson(res,'consultar a tarefa');
 
   if(res.ok)return true;
 
@@ -391,6 +392,9 @@ function App(){
   const [active,setActive]=useState(initialThreads[0]?.id||null);
   const [input,setInput]=useState('');
   const [mode,setMode]=useState('chat');
+  const [imageQualityMode,setImageQualityMode]=useState(()=>{
+    try{const v=localStorage.getItem('nexus_image_quality');return ['auto','fast','quality'].includes(v)?v:'auto'}catch{return 'auto'}
+  });
   const [busy,setBusy]=useState(false);
   const [menu,setMenu]=useState(false);
   const [status,setStatus]=useState(null);
@@ -402,6 +406,10 @@ function App(){
   const fileRef=useRef(null);
   const threadsRef=useRef(initialThreads);
   const imageJobsInFlight=useRef(new Set());
+
+  useEffect(()=>{
+    try{localStorage.setItem('nexus_image_quality',imageQualityMode)}catch{}
+  },[imageQualityMode]);
 
   useEffect(()=>{
     threadsRef.current=threads;
@@ -416,7 +424,10 @@ function App(){
   },[threads]);
 
   useEffect(()=>{
-    fetch('/api/status').then(r=>r.json()).then(setStatus).catch(()=>{});
+    fetch('/api/status')
+      .then(r=>readApiJson(r,'consultar o estado da NEXUS'))
+      .then(setStatus)
+      .catch(e=>setStatus({providers:{chat:false},error:e.message}));
   },[]);
 
   useEffect(()=>{
@@ -444,7 +455,7 @@ function App(){
       const res=await fetch('/api/learning/status',{
         headers:{'x-nexus-client':getClientId()}
       });
-      const data=await res.json();
+      const data=await readApiJson(res,'consultar a tarefa');
       if(!res.ok)throw new Error(data.error||'Falha ao carregar aprendizado.');
       setLearningStatus(data);
     }catch(e){
@@ -584,7 +595,7 @@ function App(){
         headers:apiHeaders(),
         body:JSON.stringify(payload)
       });
-      const data=await res.json().catch(()=>({}));
+      const data=await readApiJson(res,'consultar a tarefa');
       if(!res.ok)throw new Error(data.error||'Falha ao salvar feedback.');
       updateMessage(tid,message.id,{
         feedback:signal,
@@ -630,6 +641,7 @@ function App(){
     if(assistantIndex<0)return;
 
     const message=messages[assistantIndex];
+    if(message.imageJobId&&message.imageJobStatus!=='complete')return;
     void sendLearningFeedback({
       tid,
       message,
@@ -675,7 +687,7 @@ function App(){
   }){
     const type=res.headers.get('content-type')||'';
     if(!res.ok||type.includes('application/json')){
-      const data=await res.json().catch(()=>({}));
+      const data=await readApiJson(res,'consultar a tarefa');
       throw new Error(
         [data.error,data.provider_error].filter(Boolean).join(' — ')||
         'Falha no motor de imagem.'
@@ -911,10 +923,10 @@ function App(){
     let delay=900;
 
     while(Date.now()-started<timeoutMs){
-      const res=await fetch('/api/tasks/'+encodeURIComponent(taskId),{
+      const res=await fetch('/api/agent/'+encodeURIComponent(taskId),{
         headers:{'x-nexus-client':getClientId()}
       });
-      const data=await res.json();
+      const data=await readApiJson(res,'consultar a tarefa');
 
       if(!res.ok)throw new Error(data.error||'Falha ao consultar tarefa.');
 
@@ -967,7 +979,7 @@ function App(){
           sessionId:tid
         })
       });
-      const data=await res.json();
+      const data=await readApiJson(res,'consultar a tarefa');
       const summary=data.summary||previousSummary;
       if(summary){
         setThreads(p=>p.map(t=>t.id===tid?{
@@ -1320,7 +1332,9 @@ function App(){
           sessionId:tid,
           sourceWidth:sourceDimensions?.width||0,
           sourceHeight:sourceDimensions?.height||0,
-          quality:wantsHighImageQuality(effectiveText)?'quality':'fast'
+          quality:imageQualityMode==='auto'
+            ?(wantsHighImageQuality(effectiveText)?'quality':'fast')
+            :imageQualityMode
         };
 
         let directRes=null;
@@ -1389,7 +1403,7 @@ function App(){
             return;
           }
 
-          const startData=await startRes.json().catch(()=>({}));
+          const startData=await readApiJson(startRes,'iniciar geração de imagem');
           if(
             startRes.status===503 &&
             startData.error_kind==='image-workflow-unavailable'
@@ -1449,7 +1463,7 @@ function App(){
 
         const type=res.headers.get('content-type')||'';
         if(!res.ok||type.includes('application/json')){
-          const data=await res.json();
+          const data=await readApiJson(res,'consultar a tarefa');
           throw new Error(
             [data.error,data.provider_error].filter(Boolean).join(' — ')||
             'Falha no motor de vídeo.'
@@ -1504,7 +1518,7 @@ function App(){
             memorySummary:memoryState.summary||''
           })
         });
-        const started=await startRes.json();
+        const started=await readApiJson(startRes,'iniciar o agente');
         if(!startRes.ok){
           throw new Error(started.error||started.provider_error||'Falha ao iniciar o agente.');
         }
@@ -1552,7 +1566,10 @@ function App(){
           })
         });
 
-        let data=await res.json();
+        let data=await readApiJson(res,'enviar mensagem de texto');
+        if(!res.ok){
+          throw new Error([data.error,data.provider_error].filter(Boolean).join(' — ')||'O chat está indisponível (HTTP '+res.status+').');
+        }
 
         if(res.status===202&&data.async&&data.taskId){
           const workflowOutput=await pollTask(data.taskId);
@@ -1626,7 +1643,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.11</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.12</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1829,6 +1846,20 @@ function App(){
                 title="Remover referência"
               ><X size={15}/></button>
             </div>)}
+          </div>}
+          {mode==='image'&&<div className="image-quality-switch" role="group" aria-label="Qualidade da imagem">
+            <span>Qualidade</span>
+            {[
+              ['auto','Automático'],
+              ['fast','⚡ Rápido'],
+              ['quality','✦ Preciso']
+            ].map(([value,label])=><button
+              key={value}
+              type="button"
+              className={imageQualityMode===value?'selected':''}
+              aria-pressed={imageQualityMode===value}
+              onClick={()=>setImageQualityMode(value)}
+            >{label}</button>)}
           </div>}
           <textarea
             value={input}
