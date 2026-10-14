@@ -42,7 +42,7 @@ export function extractExactRequestedText(prompt, limit = 8) {
   // expressão está claramente em caixa alta/números. Isso evita transformar
   // o restante de um prompt normal em copy obrigatória.
   for (const match of source.matchAll(
-    /\b(?:escreva|coloque)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s$€£%.,:+\-]{2,100})(?=$|[;!?])/g
+    /\b(?:escreva|coloque)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9][A-ZÁÉÍÓÚÂÊÔÃÕÇ0-9\s$€£%.,:+\-]{2,100})(?=$|[;!?])/gi
   )) {
     const candidate = clean(match?.[1]);
     const letters = candidate.replace(
