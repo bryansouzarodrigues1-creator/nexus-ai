@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   rankImageCases,
+  describeImageCaseRelevance,
   scoreImageCaseRelevance,
   tokenizeImageIntent,
 } from "./image-case-ranking.js";
