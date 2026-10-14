@@ -182,11 +182,11 @@ function learningStub(env) {
   }
 }
 
-async function getLearningContext(env, taskType = "general") {
+async function getLearningContext(env, taskType = "general", request = "") {
   const stub = learningStub(env);
   if (!stub) return { taskType, lessons: [], modelStats: [] };
   try {
-    return await stub.getLearningContext(taskType);
+    return await stub.getLearningContext(taskType, String(request || "").slice(0, 4000));
   } catch {
     return { taskType, lessons: [], modelStats: [] };
   }
@@ -2524,7 +2524,7 @@ async function buildVisualEditSpec({
   }
 
   const learnedContext = formatLearningContext(
-    await getLearningContext(env, "image")
+    await getLearningContext(env, "image", prompt)
   );
 
   const attempt = await runTextChat(
@@ -4202,7 +4202,7 @@ async function handleChat(request, env) {
         : baseRoute.key === "vision"
           ? "vision"
           : "chat";
-  const learningContext = await getLearningContext(env, learningKind);
+  const learningContext = await getLearningContext(env, learningKind, message);
   const route = resolveAdaptiveChatRoute(
     baseRoute,
     learningContext,
@@ -4639,7 +4639,7 @@ async function handleImage(request, env) {
   // Avoid serial Durable Object lookups before image generation.
   const [imageProviderHealth, imageLearningContext] = await Promise.all([
     getImageProviderHealth(env),
-    getLearningContext(env, "image"),
+    getLearningContext(env, "image", prompt),
   ]);
   const cloudflareImageAvailable =
     Boolean(env.AI) &&
@@ -6855,7 +6855,7 @@ async function buildVideoPlan({
   env,
 }) {
   const learnedContext = formatLearningContext(
-    await getLearningContext(env, "video")
+    await getLearningContext(env, "video", prompt)
   );
 
   const fallback = {
