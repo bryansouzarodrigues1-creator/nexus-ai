@@ -17,11 +17,8 @@ jobs:
 
       - run: npm install
 
-      - name: Check Worker syntax
-        run: |
-          for file in worker/*.js; do
-            node --check "$file"
-          done
+      - name: Run regression tests and syntax checks
+        run: npm run check
 
       - run: npm run build
 
