@@ -1,4 +1,19 @@
-# NEXUS AI v2.11
+# NEXUS AI v2.12
+
+## NEXUS v2.12 — Chat confiável, imagem rápida ou precisa e aprendizado contextual
+
+- O frontend trata respostas HTML e JSON malformado da API, exibindo um erro inteligível.
+- Rotas `/api/*` sempre chegam ao Worker; rotas desconhecidas devolvem erro JSON 404.
+- O antigo polling `/api/tasks/:id` foi corrigido para `/api/agent/:id`.
+- Respostas vazias dos modelos são tratadas como falha e ativam fallback, em vez de chegar ao chat como se fossem válidas.
+- Mensagens curtas solicitam menos tokens, reduzindo latência e consumo.
+- Modo de imagem explícito: **Automático**, **Rápido** ou **Preciso**, com preferência local.
+- As imagens recebem uma instrução de fidelidade para preservar quantidade, identidade e composição solicitadas, sem chamadas extras de IA.
+- Consultas de disponibilidade de provedor e histórico de aprendizado agora são paralelas.
+- Lições de feedback só entram no contexto quando têm relação textual com o pedido atual; o feedback de jobs ainda pendentes não contamina a memória.
+- Novos testes automatizados cobrem JSON/HTML e isolamento de aprendizado.
+
+**Validação:** `npm run check && npm run build`. Isso não faz treino de pesos de modelos; o aprendizado é memória de experiência e reuso seguro de correções.
 
 NEXUS AI é um assistente multimodal web construído com React/Vite, Cloudflare Worker, Workers AI, Durable Objects e Workflows.
 
