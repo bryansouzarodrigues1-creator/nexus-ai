@@ -67,11 +67,16 @@ export function inferNaturalAspectRatio(prompt, fallback = null) {
     text.match(/\b(1:1|16:9|9:16|4:5|5:4|3:2|2:3)\b/)?.[1];
   if (explicit) return explicit;
 
+  // Platform-specific intent takes priority over generic orientation.
+  if (/\b(story|stories|reels?|tiktok|9x16)\b/i.test(text)) {
+    return "9:16";
+  }
+
   if (/\b(feed|instagram|post vertical|4x5)\b/i.test(text)) {
     return "4:5";
   }
 
-  if (/\b(story|stories|reels?|tiktok|vertical|9x16)\b/i.test(text)) {
+  if (/\b(vertical)\b/i.test(text)) {
     return "9:16";
   }
 
