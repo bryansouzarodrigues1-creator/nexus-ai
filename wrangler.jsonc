@@ -76,6 +76,7 @@
   ],
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   }
 }
