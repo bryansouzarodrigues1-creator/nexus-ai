@@ -923,7 +923,7 @@ function App(){
     let delay=900;
 
     while(Date.now()-started<timeoutMs){
-      const res=await fetch('/api/tasks/'+encodeURIComponent(taskId),{
+      const res=await fetch('/api/agent/'+encodeURIComponent(taskId),{
         headers:{'x-nexus-client':getClientId()}
       });
       const data=await readApiJson(res,'consultar a tarefa');
@@ -1518,7 +1518,7 @@ function App(){
             memorySummary:memoryState.summary||''
           })
         });
-        const started=await startRes.json();
+        const started=await readApiJson(startRes,'iniciar o agente');
         if(!startRes.ok){
           throw new Error(started.error||started.provider_error||'Falha ao iniciar o agente.');
         }
