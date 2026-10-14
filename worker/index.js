@@ -194,44 +194,20 @@ async function getLearningContext(env, taskType = "general", request = "") {
 
 function formatLearningContext(context) {
   const lessons = Array.isArray(context?.lessons) ? context.lessons : [];
-  const stats = Array.isArray(context?.modelStats) ? context.modelStats : [];
-  if (!lessons.length && !stats.length) return "";
-
-  const parts = [];
-  if (lessons.length) {
-    parts.push(
-      "LIÇÕES APRENDIDAS DE INTERAÇÕES ANTERIORES:\n" +
-      lessons
-        .map((item, i) =>
-          (i + 1) + ". " +
-          (item?.trigger ? "Quando " + item.trigger + ": " : "") +
-          String(item?.guidance || "")
-        )
-        .join("\n")
-    );
-  }
-
-  if (stats.length) {
-    parts.push(
-      "DESEMPENHO HISTÓRICO DE MODELOS/PROVEDORES:\n" +
-      stats
-        .slice(0, 5)
-        .map((item) =>
-          [
-            item?.model || "modelo",
-            item?.provider || "provider",
-            "success=" + Math.round(Number(item?.successRate || 0) * 100) + "%",
-            item?.explicitApproval == null
-              ? ""
-              : "aprovação=" + Math.round(Number(item.explicitApproval) * 100) + "%",
-            "score=" + Math.round(Number(item?.avgScore || 0) * 100) + "%",
-          ].filter(Boolean).join(" · ")
-        )
-        .join("\n")
-    );
-  }
-
-  return parts.join("\n\n").slice(0, 9000);
+  if (!lessons.length) return "";
+  // Performance statistics belong to the router, not to the conversational
+  // system prompt. Keep the inference context small and task-specific.
+  return (
+    "LIÇÕES RELEVANTES PARA ESTE PEDIDO (não são fatos do mundo):\n" +
+    lessons
+      .slice(0, 6)
+      .map((item, i) =>
+        (i + 1) + ". " +
+        (item?.trigger ? "Quando " + item.trigger + ": " : "") +
+        String(item?.guidance || "")
+      )
+      .join("\n")
+  ).slice(0, 4200);
 }
 
 async function recordGlobalLearningOutcome(env, outcome = {}) {
