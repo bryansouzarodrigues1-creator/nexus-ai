@@ -1,4 +1,5 @@
 import { InferenceClient } from "@huggingface/inference";
+import { withDeadline } from "./chat-timeout.js";
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import {
   classifyAdaptiveFailure,
@@ -32,7 +33,8 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.12.0";
+const VERSION = "2.12.1";
+const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const CF_REASONING_MODEL = "@cf/openai/gpt-oss-120b";
@@ -143,7 +145,7 @@ async function getServerConversation(env, sessionId) {
   const stub = conversationStub(env, sessionId);
   if (!stub) return null;
   try {
-    return await stub.getSnapshot();
+    return await withDeadline(() => stub.getSnapshot(), 1800, "memória da conversa");
   } catch {
     return null;
   }
@@ -186,7 +188,7 @@ async function getLearningContext(env, taskType = "general", request = "") {
   const stub = learningStub(env);
   if (!stub) return { taskType, lessons: [], modelStats: [] };
   try {
-    return await stub.getLearningContext(taskType, String(request || "").slice(0, 4000));
+    return await withDeadline(() => stub.getLearningContext(taskType, String(request || "").slice(0, 4000)), 1800, "memória de aprendizado");
   } catch {
     return { taskType, lessons: [], modelStats: [] };
   }
@@ -1095,39 +1097,38 @@ async function handleStatus(env) {
 
 async function runHfChat(model, messages, env, options = {}) {
   if (!env.HF_TOKEN) {
+    return { ok: false, status: 503, raw: "HF_TOKEN não configurado.", model, provider: "huggingface" };
+  }
+  try {
+    const response = await withDeadline(async (signal) => {
+      const res = await fetch(HF_CHAT_URL, {
+        method: "POST",
+        signal,
+        headers: {
+          Authorization: "Bearer " + env.HF_TOKEN,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          max_tokens: options.maxTokens || 1800,
+          temperature: options.temperature ?? 0.72,
+          top_p: options.topP ?? 0.95,
+          messages,
+        }),
+      });
+      return { status: res.status, ok: res.ok, raw: await res.text() };
+    }, options.timeoutMs || 14000, "Hugging Face");
+    return { ...response, model, provider: "huggingface" };
+  } catch (error) {
     return {
       ok: false,
-      status: 503,
-      raw: "HF_TOKEN não configurado.",
+      status: error?.code === "NEXUS_TIMEOUT" ? 504 : 503,
+      raw: String(error?.message || error),
       model,
       provider: "huggingface",
     };
   }
-
-  const res = await fetch(HF_CHAT_URL, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + env.HF_TOKEN,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      max_tokens: options.maxTokens || 1800,
-      temperature: options.temperature ?? 0.72,
-      top_p: options.topP ?? 0.95,
-      messages,
-    }),
-  });
-
-  const raw = await res.text();
-  return {
-    ok: res.ok,
-    status: res.status,
-    raw,
-    model,
-    provider: "huggingface",
-  };
 }
 
 function extractModelText(rawOrData) {
@@ -1594,7 +1595,11 @@ async function runCloudflareChat(model, messages, env, options = {}) {
       }
     }
 
-    const data = await env.AI.run(model, payload, runOptions);
+    const data = await withDeadline(
+      (signal) => env.AI.run(model, payload, { ...runOptions, signal }),
+      options.timeoutMs || 18000,
+      "Workers AI"
+    );
     if (!extractModelText(data)) {
       return {
         ok: false,
@@ -1634,10 +1639,11 @@ async function runTextChat(messages, env, options = {}) {
     if (primary !== CF_GENERAL_MODEL) fallbacks.push(CF_GENERAL_MODEL);
     if (primary !== CF_CODE_MODEL && !fallbacks.includes(CF_CODE_MODEL)) fallbacks.push(CF_CODE_MODEL);
 
-    for (const model of [primary, ...fallbacks]) {
+    for (const model of (options.interactive ? [primary, ...fallbacks].slice(0, 2) : [primary, ...fallbacks])) {
       const attemptStartedAt = Date.now();
       const attempt = await runCloudflareChat(model, messages, env, {
         ...options,
+        timeoutMs: options.interactive ? (options.quickReply ? 6500 : 9000) : options.timeoutMs || 18000,
         reasoningEffort:
           (
             model === CF_REASONING_MODEL ||
@@ -1649,7 +1655,7 @@ async function runTextChat(messages, env, options = {}) {
       lastAttempt = attempt;
       if (attempt.ok) return attempt;
 
-      if (options.learningKind) {
+      if (options.learningKind && !options.interactive) {
         const failure = classifyAdaptiveFailure(attempt.raw);
         await recordGlobalLearningOutcome(env, {
           kind: options.learningKind,
@@ -1674,11 +1680,14 @@ async function runTextChat(messages, env, options = {}) {
       "openai/gpt-oss-120b:cheapest";
 
     let attemptStartedAt = Date.now();
-    let attempt = await runHfChat(primary, messages, env, options);
+    let attempt = await runHfChat(primary, messages, env, {
+      ...options,
+      timeoutMs: options.interactive ? 6000 : options.timeoutMs || 14000,
+    });
     lastAttempt = attempt;
     if (attempt.ok) return attempt;
 
-    if (options.learningKind) {
+    if (options.learningKind && !options.interactive) {
       const failure = classifyAdaptiveFailure(attempt.raw);
       await recordGlobalLearningOutcome(env, {
         kind: options.learningKind,
@@ -1690,7 +1699,7 @@ async function runTextChat(messages, env, options = {}) {
       });
     }
 
-    if (primary !== "openai/gpt-oss-20b:fastest") {
+    if (!options.interactive && primary !== "openai/gpt-oss-20b:fastest") {
       attemptStartedAt = Date.now();
       attempt = await runHfChat(
         "openai/gpt-oss-20b:fastest",
@@ -4139,7 +4148,8 @@ async function convertDocumentAttachment(attachment, env) {
   return String(item.data || "").slice(0, 120000);
 }
 
-async function handleChat(request, env) {
+async function handleChat(request, env, ctx) {
+  const startedAt = Date.now();
   const body = await request.json();
   const message = String(body.message || "").trim();
   const mode = body.mode === "search" ? "search" : "chat";
@@ -4161,12 +4171,14 @@ async function handleChat(request, env) {
     return json({ error: "Nenhum provedor de IA está configurado." }, 503);
 
   if (sessionId) {
-    await appendServerEvent(env, sessionId, {
+    const saveRequest = appendServerEvent(env, sessionId, {
       type: "chat-request",
       role: "user",
       content: message,
       meta: { mode },
     });
+    if (ctx?.waitUntil) ctx.waitUntil(saveRequest);
+    else await withDeadline(() => saveRequest, 1400, "registro da conversa");
   }
 
   const baseRoute = chooseChatRoute(message, mode, attachment);
@@ -4398,12 +4410,12 @@ async function handleChat(request, env) {
       503
     );
   } else {
+    const quickReply = route.key === "general" && !attachment && message.length <= 180;
     attempt = await runTextChat(buildMessages(userText), env, {
-      cloudflareModel: route.model,
-      maxTokens:
-        route.key === "general" && !attachment && message.length <= 160
-          ? Math.min(route.maxTokens, 700)
-          : route.maxTokens,
+      cloudflareModel: quickReply ? CF_FAST_CHAT_MODEL : route.model,
+      interactive: true,
+      quickReply,
+      maxTokens: quickReply ? 384 : route.maxTokens,
       temperature: route.key === "deep" ? 0.45 : 0.68,
       topP: 0.94,
       reasoningEffort: route.reasoningEffort,
@@ -4446,7 +4458,7 @@ async function handleChat(request, env) {
   }));
 
   if (sessionId) {
-    await Promise.all([
+    const persist = Promise.all([
       appendServerEvent(env, sessionId, {
         type: "chat-response",
         role: "assistant",
@@ -4470,15 +4482,19 @@ async function handleChat(request, env) {
         },
       }),
     ]);
+    if (ctx?.waitUntil) ctx.waitUntil(persist);
+    else await withDeadline(() => persist, 1500, "registro da resposta");
   }
 
-  await recordGlobalLearningOutcome(env, {
+  const recordOutcome = recordGlobalLearningOutcome(env, {
     kind: learningKind,
     provider: attempt.provider,
     model: attempt.model,
     ok: true,
     latencyMs: Date.now() - startedAt,
   });
+  if (ctx?.waitUntil) ctx.waitUntil(recordOutcome);
+  else await withDeadline(() => recordOutcome, 1200, "registro do aprendizado");
 
   return json({
     answer,
@@ -7845,7 +7861,7 @@ async function enforceRateLimit(request, env, pathname) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     try {
@@ -7855,7 +7871,7 @@ export default {
         return handleStatus(env);
 
       if (url.pathname === "/api/chat" && request.method === "POST")
-        return handleChat(request, env);
+        return handleChat(request, env, ctx);
 
       if (url.pathname === "/api/memory" && request.method === "POST")
         return handleMemory(request, env);
