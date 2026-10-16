@@ -394,7 +394,7 @@ function App(){
   const [input,setInput]=useState('');
   const [mode,setMode]=useState('chat');
   const [imageQualityMode,setImageQualityMode]=useState(()=>{
-    try{const v=localStorage.getItem('nexus_image_quality');return ['auto','fast','quality'].includes(v)?v:'auto'}catch{return 'auto'}
+    try{const v=localStorage.getItem('nexus_image_quality');return ['auto','fast','quality','precise'].includes(v)?v:'auto'}catch{return 'auto'}
   });
   const [busy,setBusy]=useState(false);
   const [menu,setMenu]=useState(false);
@@ -688,14 +688,21 @@ function App(){
   }){
     const type=res.headers.get('content-type')||'';
     if(!res.ok||type.includes('application/json')){
-      const data=await readApiJson(res,'consultar a tarefa');
-      throw new Error(
-        [data.error,data.provider_error].filter(Boolean).join(' — ')||
-        'Falha no motor de imagem.'
-      );
+      if(type.includes('application/json')){
+        const data=await readApiJson(res,'consultar a tarefa');
+        throw new Error(
+          [data.error,data.provider_error].filter(Boolean).join(' — ')||
+          'Falha no motor de imagem.'
+        );
+      }
+      throw new Error('O servidor não entregou uma imagem válida (HTTP '+res.status+').');
+    }
+    if(!/^image\/(jpeg|png|webp|gif|avif)(?:;|$)/i.test(type)){
+      throw new Error('O servidor respondeu, mas não entregou uma imagem. Tente novamente.');
     }
 
     const blob=await res.blob();
+    if(!blob.size)throw new Error('O provedor devolveu uma imagem vazia.');
     const media=await storeGeneratedMedia(blob,'image');
     const imageMode=res.headers.get('x-nexus-image-mode')||'new';
     const model=res.headers.get('x-nexus-model')||'';
@@ -779,9 +786,14 @@ function App(){
         :'Imagem gerada.'
     );
 
+    const finalContent=qualityGateState==='fail'
+      ?content+' A verificação encontrou inconsistências. Revise a imagem antes de usar.'
+      :(!visualVerified&&provider==='cloudflare'
+        ?content+' A verificação automática não pôde ser concluída.'
+        :content);
     const patch={
       role:'assistant',
-      content,
+      content:finalContent,
       media,
       model,
       provider,
@@ -1853,7 +1865,8 @@ function App(){
             {[
               ['auto','Automático'],
               ['fast','⚡ Rápido'],
-              ['quality','✦ Preciso']
+              ['quality','✦ Qualidade'],
+              ['precise','◎ Precisão máxima']
             ].map(([value,label])=><button
               key={value}
               type="button"
