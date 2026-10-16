@@ -25,4 +25,17 @@ const broke=await callExternalChat(availableChatProviders(env)[2],[],{timeoutMs:
 assert.equal(broke.status,504);
 noteProviderResult("huggingface",{ok:false,status:402,raw:"You have no remaining credits."},5000);
 assert.equal(isProviderCoolingDown("huggingface",7000),true);
+const truncated = await callExternalChat(
+  availableChatProviders(env)[0],
+  [{ role: "user", content: "Uma resposta longa" }],
+  { maxTokens: 1150 },
+  async (_url, request) => {
+    const body = JSON.parse(request.body);
+    assert.equal(body.max_tokens, 1150);
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: "Seção 1 de um texto longo..." }, finish_reason: "length" }]
+    }), { status: 200 });
+  }
+);
+assert.equal(JSON.parse(truncated.raw).choices[0].finish_reason, "length");
 console.log("backup provider tests passed");
