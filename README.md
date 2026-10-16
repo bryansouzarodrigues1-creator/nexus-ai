@@ -931,6 +931,8 @@ Modelos padrão: Groq `openai/gpt-oss-20b` (rápido) ou `openai/gpt-oss-120b`; G
 
 ## Fidelidade de imagem v2.14
 
+> Publicação: os builds são disparados automaticamente por commits na branch `main`. Após trocar o token em **Cloudflare → Settings → Builds → API token**, um novo commit nesta branch permite validar o fluxo atualizado sem alterar Secrets nem Bindings.
+
 - **Rápido**: geração econômica e poucas verificações; **Qualidade**: verificação e correções habituais; **Precisão máxima**: até três retries corretivos adicionais, somente sob escolha explícita do usuário. Não é uma garantia de resultado perfeito, e pode demorar mais e consumir cota adicional.
 - Proteção determinística do pedido original contra alterações involuntárias pelo planejador/expansor: texto obrigatório, números de WhatsApp pedidos na arte, contagens explícitas e proporções especificadas.
 - O verificador tenta transcrever texto e informar a contagem de objetos. Contagens observadas incorretas alimentam o retry; contagens não observadas são marcadas como não verificadas, não aprovadas.
