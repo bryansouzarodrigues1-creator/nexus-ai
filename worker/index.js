@@ -3568,9 +3568,12 @@ async function verifyGeneratedImageV2({
     composition,
     backgroundPreservation: 1,
     stylePreservation,
-    requestFulfillment,
+    requestFulfillment: finalFulfillment,
     artifactFree,
     textAccuracy,
+    subjectCountVerified: countCompliance.verified,
+    subjectCountPass: countCompliance.verified ? countCompliance.pass : null,
+    subjectCountIssues: countIssues,
     deterministicTextAccuracy:
       deterministicText.applicable ? deterministicText.score : null,
     exactTextMatches:
@@ -3579,8 +3582,13 @@ async function verifyGeneratedImageV2({
       deterministicText.applicable ? deterministicText.total : null,
     observedText,
     realism,
-    retryInstruction: String(parsed?.retryInstruction || "").slice(0, 3000),
-    issues: cleanStringArray(parsed?.issues, 14),
+    retryInstruction: [
+      countIssues.length
+        ? "Fix the number of objects exactly: " + countIssues.join("; ")
+        : "",
+      String(parsed?.retryInstruction || ""),
+    ].filter(Boolean).join(" ").slice(0, 3000),
+    issues: [...countIssues, ...cleanStringArray(parsed?.issues, 14)].slice(0, 14),
     unwantedChanges: [],
     resultDescription,
   };
