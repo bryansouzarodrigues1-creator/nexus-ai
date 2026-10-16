@@ -1,6 +1,6 @@
 import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
-import { enforceImageContract, imageContractInstructions } from "./image-contract.js";
+import { enforceImageContract, imageContractInstructions, evaluateObjectCountCompliance } from "./image-contract.js";
 import { requireImageMime } from "./image-format.js";
 import {
   getChatProviderStatus,
@@ -3400,9 +3400,13 @@ async function verifyGeneratedImageV2({
 
   const schema = [
     "Retorne SOMENTE JSON válido:",
-    "{pass:boolean,score:number,composition:number,styleMatch:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,observedText:string[],issues:string[],retryInstruction:string}.",
+    "{pass:boolean,score:number,composition:number,styleMatch:number,requestFulfillment:number,artifactFree:number,textAccuracy:number,realism:number,observedText:string[],observedSubjectCounts:[{subject:string,count:number}],issues:string[],retryInstruction:string}.",
     "Todos os scores vão de 0 a 1.",
     "observedText deve transcrever literalmente texto relevante que aparece na imagem, sem corrigir ortografia, acentos, números, caixa ou pontuação.",
+    "observedSubjectCounts: conte visualmente cada tipo de objeto solicitado abaixo. Use o mesmo nome exato de subject do pedido e um número inteiro. Se não puder contar com confiança, omita esse subject; nunca invente uma contagem.",
+    taskPlan?.contract?.counts?.length
+      ? "QUANTIDADES EXATAS SOLICITADAS: " + JSON.stringify(taskPlan.contract.counts)
+      : "",
     "Avalie se a imagem cumpre exatamente o pedido, não apenas se é bonita.",
     "Penalize anatomia incoerente, elementos duplicados, texto ilegível/incorreto, objetos não pedidos, composição ruim e estilo divergente.",
     taskPlan?.requiresTextAccuracy
@@ -3527,10 +3531,22 @@ async function verifyGeneratedImageV2({
     ? Math.min(modelTextAccuracy, deterministicText.score)
     : modelTextAccuracy;
   const realism = clamp(parsed?.realism, artifactFree);
+  const countCompliance = evaluateObjectCountCompliance(
+    taskPlan?.contract?.counts || [],
+    parsed?.observedSubjectCounts || []
+  );
+  const countFailure = countCompliance.verified && !countCompliance.pass;
+  const finalFulfillment = countFailure
+    ? Math.min(requestFulfillment, 0.45)
+    : requestFulfillment;
+  const countIssues = countCompliance.mismatches.map(item =>
+    "Quantidade incorreta de " + item.subject + ": pedido " + item.expected + ", observado " + item.observed
+  );
 
   const pass =
     score >= 0.78 &&
-    requestFulfillment >= 0.78 &&
+    finalFulfillment >= 0.78 &&
+    !countFailure &&
     artifactFree >= 0.72 &&
     composition >= 0.68 &&
     (
