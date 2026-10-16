@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { extractImageContract, enforceImageContract, imageContractInstructions } from "./image-contract.js";
+import { extractImageContract, enforceImageContract, imageContractInstructions, evaluateObjectCountCompliance } from "./image-contract.js";
 const prompt="Crie um banner com 2 caminhões, coloque o texto \"BRYAN FRETES\" e meu WhatsApp 22992641530, formato story 9:16, sem pessoas.";
 const c=extractImageContract(prompt);
 assert.equal(c.counts[0].count,2);
@@ -20,3 +20,10 @@ const doNotInfer=extractImageContract("Faça uma foto de 2 pessoas em uma praça
 assert(doNotInfer.counts[0].count===2);
 assert.equal(doNotInfer.requestedText.length,0);
 console.log("image contract tests passed");
+
+const detected=evaluateObjectCountCompliance([{count:2,subject:"caminhões"}],[{subject:"caminhões",count:1}]);
+assert.equal(detected.verified,true);
+assert.equal(detected.pass,false);
+assert.equal(detected.mismatches[0].expected,2);
+assert.equal(evaluateObjectCountCompliance([{count:2,subject:"caminhões"}],[]).verified,false);
+assert.equal(evaluateObjectCountCompliance([{count:2,subject:"caminhões"}],[{subject:"caminhões",count:2}]).pass,true);
