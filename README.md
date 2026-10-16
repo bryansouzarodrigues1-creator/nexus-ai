@@ -928,3 +928,12 @@ Configure **separadamente** em Cloudflare → Workers & Pages → nexus-ai → S
 Modelos padrão: Groq `openai/gpt-oss-20b` (rápido) ou `openai/gpt-oss-120b`; Gemini `gemini-2.5-flash-lite` (rápido) ou `gemini-2.5-flash`; OpenRouter `openrouter/free`. Os modelos podem ser substituídos nas variáveis `GROQ_CHAT_MODEL`, `GEMINI_CHAT_MODEL` e `OPENROUTER_CHAT_MODEL`. Se um provedor retirar um modelo, ajuste a respectiva variável. O conteúdo da solicitação é enviado ao provedor que assumir o processamento; confira as políticas de privacidade de cada serviço.
 
 **Gratuidade não é ilimitada:** cotas e termos variam e podem mudar. Não há compra automática nem uso do `NOVITA_API_KEY` para chat (a chave existente é usada no sistema de imagem, não é reserva de texto).
+
+## Fidelidade de imagem v2.14
+
+- **Rápido**: geração econômica e poucas verificações; **Qualidade**: verificação e correções habituais; **Precisão máxima**: até três retries corretivos adicionais, somente sob escolha explícita do usuário. Não é uma garantia de resultado perfeito, e pode demorar mais e consumir cota adicional.
+- Proteção determinística do pedido original contra alterações involuntárias pelo planejador/expansor: texto obrigatório, números de WhatsApp pedidos na arte, contagens explícitas e proporções especificadas.
+- O verificador tenta transcrever texto e informar a contagem de objetos. Contagens observadas incorretas alimentam o retry; contagens não observadas são marcadas como não verificadas, não aprovadas.
+- As verificações internas de IA ficam limitadas a uma tentativa do modelo com timeout de 7,5 s para reduzir as esperas sequenciais; a imagem pode ser marcada como não verificada se a inspeção falhar.
+- Payloads Cloudflare são validados pela assinatura de bytes e entregues com o MIME real JPEG/PNG/WebP. HTML/respostas incorretas não podem se passar por imagem.
+- Esta versão não adiciona provedores nem chamadas pagas por padrão. **Não** oferece reprodução determinística perfeita de letras no bitmap: o verificador pode solicitar novo desenho quando errar.
