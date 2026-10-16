@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+models/
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.log
