@@ -117,3 +117,44 @@ video.generated{width:min(720px,100%)}
 .image-quality-switch button{border:1px solid var(--border,rgba(160,160,160,.28));background:transparent;color:inherit;border-radius:12px;padding:6px 9px;font-size:12px;cursor:pointer;transition:background .15s,border-color .15s}
 .image-quality-switch button.selected{background:rgba(116,130,255,.16);border-color:rgba(135,145,255,.6);font-weight:700}
 .image-quality-switch button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+
+/* NEXUS mobile reading fix: reserve the actual fixed composer height instead of
+   a hard-coded padding, and keep long markdown within the viewport. */
+:root{--nexus-composer-height:220px}
+html{scroll-padding-bottom:calc(var(--nexus-composer-height) + 24px)}
+main,.chat,.messages,.msg{min-width:0}
+main{min-height:100vh;min-height:100dvh}
+.messages{
+  max-width:100%;
+  padding-bottom:calc(var(--nexus-composer-height) + 32px);
+  overflow-wrap:anywhere;
+}
+.msg{align-items:flex-start}
+.msg>div:last-child{min-width:0;overflow-wrap:anywhere}
+.msg.assistant>div:last-child{width:100%;max-width:calc(100% - 42px)}
+.msg.user>div:last-child{width:auto;max-width:min(75%,calc(100% - 42px))}
+.markdown{width:100%;max-width:100%;overflow-wrap:anywhere;word-break:normal;line-height:1.55}
+.markdown h1{font-size:1.55rem}
+.markdown h2{font-size:1.3rem}
+.markdown h3{font-size:1.13rem}
+.markdown pre,.markdown table{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.markdown img,.markdown video{max-width:100%;height:auto}
+.markdown ul,.markdown ol{padding-inline-start:1.35rem}
+.markdown li,.markdown p,.plain-content{overflow-wrap:anywhere}
+.composer-wrap{z-index:9;padding-bottom:max(14px,env(safe-area-inset-bottom,0px))}
+.composer textarea{font-size:16px}
+@media(max-width:760px){
+  .chat{width:100%}
+  .messages{width:100%;padding:14px 15px calc(var(--nexus-composer-height) + 32px)}
+  .msg{gap:10px;margin:18px 0;line-height:1.5}
+  .avatar{width:28px;height:28px}
+  .msg.assistant>div:last-child{width:100%;max-width:calc(100% - 38px)}
+  .msg.user>div:last-child{max-width:calc(100% - 38px)}
+  .markdown{font-size:15px;line-height:1.55}
+  .markdown h1{font-size:1.35rem}
+  .markdown h2{font-size:1.16rem}
+  .markdown h3{font-size:1.05rem}
+  .markdown blockquote{margin:10px 0}
+  .markdown ul,.markdown ol{padding-inline-start:1.2rem}
+  .composer-wrap{padding:12px 12px max(14px,env(safe-area-inset-bottom,0px))}
+}
