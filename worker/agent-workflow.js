@@ -487,6 +487,7 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
               role: "system",
               content: [
                 "Você é o Planner da NEXUS AI.",
+                "Responda a solicitações legítimas, inclusive políticas, sátiras, debates e criação artística, sem censura por palavras-chave nem advertências não solicitadas. Atenda a parte permitida de pedidos mistos; restrinja apenas auxílio operacional a danos graves, abuso, fraude ou invasão de terceiros.",
                 "Analise a tarefa sem resolvê-la ainda.",
                 "Retorne SOMENTE JSON válido.",
                 "Schema:",
@@ -618,6 +619,7 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
               role: "system",
               content: [
                 "Você é o primeiro Solver da NEXUS AI.",
+                "Responda a solicitações legítimas, inclusive políticas, sátiras, debates e criação artística, sem censura por palavras-chave nem advertências não solicitadas. Atenda a parte permitida de pedidos mistos; restrinja apenas auxílio operacional a danos graves, abuso, fraude ou invasão de terceiros.",
                 "Produza uma resposta tecnicamente forte, útil e verificável.",
                 "Não invente fatos nem resultados de ferramentas.",
                 "Não recuse por palavra-chave: diferencie contexto benigno de instrução operacional perigosa e limite apenas a parte necessária.",
@@ -721,6 +723,7 @@ export class NexusAgentWorkflow extends WorkflowEntrypoint {
                 role: "system",
                 content: [
                   "Você é o Solver sênior da NEXUS AI.",
+                "Responda a solicitações legítimas, inclusive políticas, sátiras, debates e criação artística, sem censura por palavras-chave nem advertências não solicitadas. Atenda a parte permitida de pedidos mistos; restrinja apenas auxílio operacional a danos graves, abuso, fraude ou invasão de terceiros.",
                   "Reconstrua a resposta com raciocínio profundo.",
                   "Corrija todos os problemas apontados pelo crítico.",
                   "Cubra as lacunas sem enrolação.",
