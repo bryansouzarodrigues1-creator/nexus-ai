@@ -394,7 +394,7 @@ function App(){
   const [input,setInput]=useState('');
   const [mode,setMode]=useState('chat');
   const [imageQualityMode,setImageQualityMode]=useState(()=>{
-    try{const v=localStorage.getItem('nexus_image_quality');return ['auto','fast','quality'].includes(v)?v:'auto'}catch{return 'auto'}
+    try{const v=localStorage.getItem('nexus_image_quality');return ['auto','fast','quality','precise'].includes(v)?v:'auto'}catch{return 'auto'}
   });
   const [busy,setBusy]=useState(false);
   const [menu,setMenu]=useState(false);
@@ -1853,7 +1853,8 @@ function App(){
             {[
               ['auto','Automático'],
               ['fast','⚡ Rápido'],
-              ['quality','✦ Preciso']
+              ['quality','✦ Qualidade'],
+              ['precise','◎ Precisão máxima']
             ].map(([value,label])=><button
               key={value}
               type="button"
