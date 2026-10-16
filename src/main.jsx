@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
+import './chat-layout.css';
 import {readApiJson} from './api-response.js';
 import {fetchChatJson} from './chat-request.js';
 import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory,selectApprovedChainReferenceKeys} from './image-context.js';
@@ -405,6 +406,7 @@ function App(){
   const [learningStatus,setLearningStatus]=useState(null);
   const [learningBusy,setLearningBusy]=useState(false);
   const fileRef=useRef(null);
+  const chatScrollRef=useRef(null);
   const threadsRef=useRef(initialThreads);
   const imageJobsInFlight=useRef(new Set());
 
@@ -509,6 +511,16 @@ function App(){
   },[active]);
 
   const thread=useMemo(()=>threads.find(t=>t.id===active),[threads,active]);
+  const messageCount=thread?.messages?.length||0;
+  useEffect(()=>{
+    // Jump to the latest message on chat changes or after sending/receiving a
+    // new message. Subsequent feedback/image metadata edits preserve scroll.
+    const frame=requestAnimationFrame(()=>{
+      const list=chatScrollRef.current;
+      if(list)list.scrollTop=list.scrollHeight;
+    });
+    return()=>cancelAnimationFrame(frame);
+  },[active,messageCount]);
   const hasImage=Boolean(thread?.messages?.some(m=>m.media?.type==='image'));
 
   function newChat(){
@@ -1656,7 +1668,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.12.1</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.14.1</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1763,7 +1775,7 @@ function App(){
         <span className="cloud">☁ nuvem</span>
       </header>
 
-      <section className="chat">
+      <section className="chat" ref={chatScrollRef} role="log" aria-label="Mensagens da conversa">
         {(mode==='video'||mode==='codex')
           ?<div className="future-feature">
             <div className="future-icon">{mode==='video'?<Video/>:<Code2/>}</div>
