@@ -14,7 +14,7 @@ export function extractImageContract(prompt) {
   const numbers = [];
 
   // Capture phones only when they are explicitly requested in a visual.
-  for (const m of source.matchAll(/\b(?:whats\s*app|whatsapp|telefone|celular|contato|phone)\s*(?:é|e|:|n[uú]mero|de|do|no|para|\-|=)?\s*[:=\-]?\s*(\+?\d[\d\s().-]{8,17}\d)/giu)) {
+  for (const m of source.matchAll(/\b(?:whats\s*app|whatsapp|telefone|celular|contato|phone)\s*(?:é|e|:|n[uú]mero|de|do|no|para|-|=)?\s*[:=-]?\s*(\+?\d[\d\s().-]{8,17}\d)/giu)) {
     const number = m[1].trim().replace(/[.,;!?]+$/, "");
     const digits = number.replace(/\D/g, "");
     if (digits.length >= 10 && digits.length <= 15) numbers.push(number);
