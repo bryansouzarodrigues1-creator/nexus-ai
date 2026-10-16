@@ -407,6 +407,43 @@ function App(){
   const fileRef=useRef(null);
   const threadsRef=useRef(initialThreads);
   const imageJobsInFlight=useRef(new Set());
+  const composerWrapRef=useRef(null);
+  const messageListRef=useRef(null);
+  const followLatestRef=useRef(true);
+
+  // A fixed composer can grow when references, quality modes or the on-screen
+  // keyboard change. Its measured height must be reserved below the messages.
+  useEffect(()=>{
+    const element=composerWrapRef.current;
+    const root=document.documentElement;
+    const updateHeight=()=>{
+      const height=element?Math.ceil(element.getBoundingClientRect().height):0;
+      root.style.setProperty('--nexus-composer-height',height+'px');
+    };
+    updateHeight();
+    const observer=element&&typeof ResizeObserver!=='undefined'?new ResizeObserver(updateHeight):null;
+    if(observer)observer.observe(element);
+    window.addEventListener('resize',updateHeight);
+    window.visualViewport?.addEventListener('resize',updateHeight);
+    return()=>{
+      observer?.disconnect();
+      window.removeEventListener('resize',updateHeight);
+      window.visualViewport?.removeEventListener('resize',updateHeight);
+      root.style.removeProperty('--nexus-composer-height');
+    };
+  },[mode]);
+
+  // Only follow new output when the user is already at the bottom.
+  // Manually scrolling up to read a long reply must never snap back down.
+  useEffect(()=>{
+    const updateFollow=()=>{
+      const distance=document.documentElement.scrollHeight-(window.scrollY+window.innerHeight);
+      followLatestRef.current=distance<140;
+    };
+    window.addEventListener('scroll',updateFollow,{passive:true});
+    return()=>window.removeEventListener('scroll',updateFollow);
+  },[]);
+
 
   useEffect(()=>{
     try{localStorage.setItem('nexus_image_quality',imageQualityMode)}catch{}
@@ -510,6 +547,38 @@ function App(){
 
   const thread=useMemo(()=>threads.find(t=>t.id===active),[threads,active]);
   const hasImage=Boolean(thread?.messages?.some(m=>m.media?.type==='image'));
+
+  useEffect(()=>{
+    // When opening a different conversation, show its latest message.
+    followLatestRef.current=true;
+  },[active]);
+
+  useEffect(()=>{
+    const frame=window.requestAnimationFrame(()=>{
+      if(followLatestRef.current){
+        window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+      }
+    });
+    return()=>window.cancelAnimationFrame(frame);
+  },[active,thread?.messages?.length,busy]);
+
+  useEffect(()=>{
+    const element=messageListRef.current;
+    if(!element||typeof ResizeObserver==='undefined')return;
+    let frame=0;
+    const observer=new ResizeObserver(()=>{
+      if(!followLatestRef.current)return;
+      window.cancelAnimationFrame(frame);
+      frame=window.requestAnimationFrame(()=>{
+        if(followLatestRef.current){
+          window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+        }
+      });
+    });
+    observer.observe(element);
+    return()=>{observer.disconnect();window.cancelAnimationFrame(frame)};
+  },[active,thread?.messages?.length]);
+
 
   function newChat(){
     const t={id:id(),title:'Nova conversa',messages:[]};
@@ -1113,6 +1182,8 @@ function App(){
   async function send(){
     const text=input.trim();
     if((!text&&!attachment)||busy)return;
+    // Sending a new prompt explicitly returns the viewport to the newest reply.
+    followLatestRef.current=true;
 
     const effectiveText=text||(attachment?.kind==='image'?'Analise esta imagem.':'Analise este arquivo.');
     const autoMediaMode=mode==='chat'?detectExplicitMediaIntent(effectiveText):null;
@@ -1656,7 +1727,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.12.1</span></div>
+        <div><strong>NEXUS AI</strong><span>{status?.version?'v'+status.version:'NEXUS'}</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
@@ -1787,7 +1858,7 @@ function App(){
               {starterActions.map(({icon:Icon,label,mode:m})=><button key={label} onClick={()=>chooseTool(m)}><Icon size={18}/>{label}</button>)}
             </div>
           </div>
-          :<div className="messages">
+          :<div className="messages" ref={messageListRef} role="log" aria-live="off">
             {thread.messages.map((m,i)=><div className={'msg '+m.role} key={m.id||i}>
               <div className="avatar">{m.role==='user'?'V':'N'}</div>
               <div>
@@ -1829,7 +1900,7 @@ function App(){
         }
       </section>
 
-      {mode!=='video'&&mode!=='codex'&&<div className="composer-wrap">
+      {mode!=='video'&&mode!=='codex'&&<div className="composer-wrap" ref={composerWrapRef}>
         <div className="composer">
           {(attachment||extraImageRefs.length>0)&&<div className="attachment-stack">
             {attachment&&<div className="attachment-chip">
