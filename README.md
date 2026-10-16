@@ -939,3 +939,10 @@ Modelos padrão: Groq `openai/gpt-oss-20b` (rápido) ou `openai/gpt-oss-120b`; G
 - As verificações internas de IA ficam limitadas a uma tentativa do modelo com timeout de 7,5 s para reduzir as esperas sequenciais; a imagem pode ser marcada como não verificada se a inspeção falhar.
 - Payloads Cloudflare são validados pela assinatura de bytes e entregues com o MIME real JPEG/PNG/WebP. HTML/respostas incorretas não podem se passar por imagem.
 - Esta versão não adiciona provedores nem chamadas pagas por padrão. **Não** oferece reprodução determinística perfeita de letras no bitmap: o verificador pode solicitar novo desenho quando errar.
+
+## Correção de visualização de chat no celular — v2.14.1
+
+- A conversa possui uma área de rolagem independente limitada pela altura visível (`100dvh`), enquanto o campo de digitação fica num elemento flex fora da área das mensagens. Assim, respostas longas não ficam sob o teclado/compositor fixo.
+- Os blocos de Markdown, listas, cabeçalhos e tabelas respeitam a largura do celular. Blocos de código continuam com rolagem horizontal própria, sem ampliar a página.
+- Ao abrir uma conversa ou receber uma nova mensagem, a lista rola até a última mensagem. Alterações de feedback e de metadados não deslocam o usuário para o fim.
+- Quando há referências/imagens anexadas e o editor fica maior que a área disponível, ele ganha sua própria rolagem. Não modifica os recursos de IA nem o fluxo de imagens.
