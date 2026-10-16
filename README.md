@@ -917,3 +917,14 @@ Itens planejados, mas que não devem ser confundidos com recursos atuais:
 ## Segurança de credenciais
 
 `HF_TOKEN` fica como Secret no Worker. Nunca deve ir para frontend ou GitHub.
+
+
+## Reserva automática de IA de texto (v2.13)
+
+O chat agora pode alternar entre Groq, Gemini, Cloudflare Workers AI, OpenRouter e Hugging Face, sem expor as chaves no navegador. A rota usa somente provedores configurados e suspende por alguns minutos/horas os que retornarem erro de cota, credencial ou tempo limite. Cada requisição interativa tem prazo máximo de tentativas; chamadas externas não incluem modelos pagos por padrão.
+
+Configure **separadamente** em Cloudflare → Workers & Pages → nexus-ai → Settings → Variables and Secrets, como **Secret** (não texto público): `GROQ_API_KEY`, `GEMINI_API_KEY` e/ou `OPENROUTER_API_KEY`. Não coloque tokens no repositório, mensagens, logs ou frontend. Você só precisa habilitar um novo serviço para ter uma reserva independente do Workers AI. Para conferir quais provedores estão conectados, consulte `GET /api/status` no campo `chatProviders` (apenas booleanos).
+
+Modelos padrão: Groq `openai/gpt-oss-20b` (rápido) ou `openai/gpt-oss-120b`; Gemini `gemini-2.5-flash-lite` (rápido) ou `gemini-2.5-flash`; OpenRouter `openrouter/free`. Os modelos podem ser substituídos nas variáveis `GROQ_CHAT_MODEL`, `GEMINI_CHAT_MODEL` e `OPENROUTER_CHAT_MODEL`. Se um provedor retirar um modelo, ajuste a respectiva variável. O conteúdo da solicitação é enviado ao provedor que assumir o processamento; confira as políticas de privacidade de cada serviço.
+
+**Gratuidade não é ilimitada:** cotas e termos variam e podem mudar. Não há compra automática nem uso do `NOVITA_API_KEY` para chat (a chave existente é usada no sistema de imagem, não é reserva de texto).
