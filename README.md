@@ -954,3 +954,10 @@ O chat adota instruções globais mais **diretas e contextuais**: não presume i
 **Não é um desbloqueio de modelos nem uma garantia de resposta a qualquer solicitação.** Groq, Workers AI, Hugging Face e demais provedores têm suas próprias políticas e filtros. A aplicação não tenta contornar recusas impostas por eles. Pedidos operacionais de dano concreto continuam sujeitos a limites, mas não devem impedir discussões informativas ou fictícias legítimas.
 
 Cobertura automática: `worker/chat-behavior.test.js` valida os princípios de abordagem e o `npm run check` continua verificando os fluxos anteriores. A melhoria de taxa de recusas indevidas ainda exige testes manuais com os mesmos prompts em produção.
+
+## Liberdade criativa contextual — v2.16
+
+- O assistente trata política, história, humor, sátira, arte, debates e opiniões divergentes como assuntos normais, evitando recusas arbitrárias e longos sermões.
+- **Fotomontagens pessoais:** ao receber uma foto do usuário e o pedido de colocá-lo ao lado de uma figura pública, como um político, o planejador de edição reconhece a composição solicitada, preserva o rosto do usuário, permite espaço adicional para outra pessoa e instrui o gerador a não apresentar a cena como comprovação de encontro real. Montagens legítimas não são vetadas por mencionarem políticos.
+- Permanece a distinção entre expressão/criação legítima e auxílio a dano grave, exploração, fraude, invasão de terceiros, provas falsificadas ou imagens íntimas não consensuais. Não há mecanismo de contorno de políticas e limites de provedores externos.
+- O roteiro de solução longa do agente e os planejadores visuais seguem as mesmas diretrizes de contexto; não exige novas chaves, conta paga nem desativa rate limits. Testes automatizados verificam as instruções e a detecção de montagens.
