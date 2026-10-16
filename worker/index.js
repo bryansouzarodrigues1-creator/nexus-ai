@@ -1,6 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
 import { getNexusContextualBehavior } from "./chat-behavior.js";
+import { VISUAL_CREATIVE_FREEDOM, isCreativeMontageRequest, applyCreativeMontagePlan } from "./visual-creative-freedom.js";
 import { enforceImageContract, imageContractInstructions, evaluateObjectCountCompliance } from "./image-contract.js";
 import { requireImageMime } from "./image-format.js";
 import {
@@ -43,7 +44,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.15.0";
+const VERSION = "2.16.0";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -1884,6 +1885,7 @@ async function expandCreativePrompt({
   const recent = cleanHistory(history).slice(-10);
   const system = [
     "Você é o diretor criativo interno da NEXUS AI.",
+    VISUAL_CREATIVE_FREEDOM,
     "Transforme pedidos visuais curtos em prompts de alta fidelidade sem mudar a intenção, os personagens, os objetos, as cores nem o estilo pedido.",
     "Não force fotorealismo quando o usuário pedir ilustração, anime, desenho, pintura, 3D ou outro estilo.",
     "Preserve rigorosamente tudo que já existe quando houver imagem de referência e mude apenas o que o usuário pediu.",
@@ -2323,6 +2325,7 @@ async function classifyImageTask({
         role: "system",
         content: [
           "Você é o Image Task Router da NEXUS AI.",
+          VISUAL_CREATIVE_FREEDOM,
           "Classifique precisamente a tarefa visual antes de qualquer geração.",
           "Modos permitidos: create, strict_edit, enhance, remove_replace, poster, identity_lock, background.",
           "Se houver imagem de referência, prefira preservar tudo que não foi explicitamente pedido.",
@@ -2591,6 +2594,7 @@ async function buildVisualEditSpec({
         role: "system",
         content: [
           "Você é o Edit Planner V2 da NEXUS AI.",
+          VISUAL_CREATIVE_FREEDOM,
           "Crie uma especificação cirúrgica de edição de imagem.",
           "A prioridade absoluta é cumprir o pedido e preservar tudo que não foi solicitado.",
           "Retorne SOMENTE JSON válido:",
@@ -2713,7 +2717,10 @@ async function buildVisualEditSpec({
 function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
   const mode = taskPlan?.mode || spec?.operationType || "strict_edit";
 
-  const modeInstruction = {
+  const requestedMontage = isCreativeMontageRequest(userPrompt, true);
+  const modeInstruction = requestedMontage
+    ? "CONSENTED PERSONAL PHOTO COMPOSITE: add the explicitly requested person alongside the original subject. Preserve the original subject's face and identity; match the lighting and pose of the new subject. You may minimally extend the frame to fit both figures. This is a creative composition, not proof of an actual encounter."
+    : {
     enhance:
       "ENHANCEMENT MODE: improve clarity, detail fidelity and perceived quality only. Do not redesign, beautify, replace, restyle or change the scene.",
     strict_edit:
@@ -2732,6 +2739,7 @@ function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
       "Edit image 0.",
       modeInstruction,
       "Treat image 0 as the authoritative visual source.",
+      VISUAL_CREATIVE_FREEDOM,
       "Preserve the exact same main subject, identity, pose, framing, composition, background, lighting, colors and style unless the user explicitly requests a change.",
       "USER REQUEST:",
       userPrompt,
@@ -2741,6 +2749,7 @@ function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
   return [
     "Edit image 0 with maximum reference fidelity.",
     modeInstruction,
+    VISUAL_CREATIVE_FREEDOM,
     "PRESERVATION LEVEL: " + String(taskPlan?.preservationLevel || "maximum"),
     "EDIT STRENGTH TARGET: " + Number(spec.editStrength ?? taskPlan?.editStrength ?? 0.22).toFixed(2),
     spec.localized
@@ -2777,6 +2786,7 @@ function buildCreatePromptV2(userPrompt, expandedPrompt, taskPlan, learnedContex
 
   return [
     base,
+    VISUAL_CREATIVE_FREEDOM,
     isPoster
       ? "GRAPHIC DESIGN / POSTER MODE. Build clear visual hierarchy, intentional spacing, strong focal point and professional composition."
       : "IMAGE GENERATION MODE. Follow the requested subject, composition, style and details precisely without adding unrelated elements.",
@@ -4800,7 +4810,9 @@ async function handleImage(request, env) {
         })
       : localTaskPlan;
   // Never trust creative model output over fixed details explicitly typed by the user.
-  const taskPlan = enforceImageContract(inferredTaskPlan, prompt);
+  const taskPlan = applyCreativeMontagePlan(
+    enforceImageContract(inferredTaskPlan, prompt), prompt, Boolean(sourceImage)
+  );
 
   const expressImageEdit =
     shouldUseExpressImageEdit({
