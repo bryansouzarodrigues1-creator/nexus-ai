@@ -2,6 +2,14 @@ import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
 import { getNexusContextualBehavior } from "./chat-behavior.js";
 import { VISUAL_CREATIVE_FREEDOM, isCreativeMontageRequest, applyCreativeMontagePlan } from "./visual-creative-freedom.js";
+import {
+  requiresVisibleImageChange,
+  prioritizeRequestedImageEdit,
+  buildEditFulfillmentInstruction,
+  cloudflareEditGuidance,
+  imageBytesMatchSource,
+  exactCopyEditFailure,
+} from "./image-edit-fulfillment.js";
 import { enforceImageContract, imageContractInstructions, evaluateObjectCountCompliance } from "./image-contract.js";
 import { requireImageMime } from "./image-format.js";
 import {
@@ -44,7 +52,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.16.0";
+const VERSION = "2.16.1";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -2131,10 +2139,10 @@ function imageTaskFallback(prompt, hasSourceImage) {
 
   let mode = "create";
   if (hasSourceImage) {
-    if (enhance) mode = "enhance";
-    else if (background) mode = "background";
-    else if (identityLock) mode = "identity_lock";
+    if (background) mode = "background";
     else if (removeReplace) mode = "remove_replace";
+    else if (identityLock) mode = "identity_lock";
+    else if (enhance) mode = "enhance";
     else mode = "strict_edit";
   } else if (poster) {
     mode = "poster";
@@ -2738,6 +2746,7 @@ function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
     return [
       "Edit image 0.",
       modeInstruction,
+      buildEditFulfillmentInstruction(userPrompt, true),
       "Treat image 0 as the authoritative visual source.",
       VISUAL_CREATIVE_FREEDOM,
       "Preserve the exact same main subject, identity, pose, framing, composition, background, lighting, colors and style unless the user explicitly requests a change.",
@@ -2747,8 +2756,9 @@ function buildStrictEditPrompt(userPrompt, spec, taskPlan, visualContext) {
   }
 
   return [
-    "Edit image 0 with maximum reference fidelity.",
+    "Perform the explicitly requested edit on image 0 and preserve only details unrelated to the request.",
     modeInstruction,
+    buildEditFulfillmentInstruction(userPrompt, true),
     VISUAL_CREATIVE_FREEDOM,
     "PRESERVATION LEVEL: " + String(taskPlan?.preservationLevel || "maximum"),
     "EDIT STRENGTH TARGET: " + Number(spec.editStrength ?? taskPlan?.editStrength ?? 0.22).toFixed(2),
@@ -3691,11 +3701,14 @@ async function runCloudflareImage({
   form.append("prompt", prompt);
   form.append("width", String(roundImageDimension(width)));
   form.append("height", String(roundImageDimension(height)));
+  // FLUX.2 Klein exposes prompt guidance, not img2img denoising strength.
+  // Higher guidance on actual edits encourages following the requested change.
   form.append(
     "guidance",
-    sourceImage
-      ? String(Math.max(2.8, Math.min(5.2, 3.4 + Number(editStrength || 0.35) * 1.2)))
-      : "3.5"
+    String(cloudflareEditGuidance({
+      hasSourceImage: Boolean(sourceImage),
+      editStrength,
+    }))
   );
 
   const serialized = new Response(form);
@@ -4810,8 +4823,12 @@ async function handleImage(request, env) {
         })
       : localTaskPlan;
   // Never trust creative model output over fixed details explicitly typed by the user.
-  const taskPlan = applyCreativeMontagePlan(
-    enforceImageContract(inferredTaskPlan, prompt), prompt, Boolean(sourceImage)
+  const taskPlan = prioritizeRequestedImageEdit(
+    applyCreativeMontagePlan(
+      enforceImageContract(inferredTaskPlan, prompt), prompt, Boolean(sourceImage)
+    ),
+    prompt,
+    Boolean(sourceImage)
   );
 
   const expressImageEdit =
@@ -5162,6 +5179,9 @@ async function handleImage(request, env) {
         let verification =
           recoveredFromCandidateArena
             ? bestRejectedAcrossRoutes.best.verification
+            : sourceImage &&
+              await imageBytesMatchSource(sourceImage, generated.bytes)
+              ? exactCopyEditFailure()
             : !verifyThisCandidate
               ? {
                   verified: false,
@@ -5395,8 +5415,11 @@ async function handleImage(request, env) {
             { type: retried.mimeType || requireImageMime(retried.bytes) }
           );
 
-          let retryVerification = sourceImage
-            ? await verifyVisualEdit({
+          let retryVerification =
+            sourceImage && await imageBytesMatchSource(sourceImage, retried.bytes)
+              ? exactCopyEditFailure()
+            : sourceImage
+              ? await verifyVisualEdit({
                 originalBlob: sourceImage,
                 rootReferenceBlob: hasRootReference ? rootReferenceImage : null,
                 originalDescription: sourceDescription,
@@ -5525,6 +5548,23 @@ async function handleImage(request, env) {
             finalOutputSize =
               bestRejectedAcrossRoutes.outputSize;
           }
+        }
+
+        // A byte-for-byte copy or a visually rejected no-op is not a completed edit.
+        // Do not display it as success; allow the existing provider error path.
+        if (
+          sourceImage &&
+          requiresVisibleImageChange(prompt, true) &&
+          (
+            await imageBytesMatchSource(sourceImage, best.generated.bytes) ||
+            (
+              best.verification?.verified &&
+              Number.isFinite(Number(best.verification.requestFulfillment)) &&
+              Number(best.verification.requestFulfillment) < 0.30
+            )
+          )
+        ) {
+          throw new Error("O modelo devolveu a foto sem cumprir a alteração solicitada.");
         }
 
         const finalMode =
