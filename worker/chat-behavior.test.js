@@ -18,6 +18,6 @@ assert.match(prompt,/foto lado a lado/i);
 assert.match(prompt,/montagens criativas/i);
 assert.match(prompt,/não faça alegações falsas de autenticidade/i);
 assert.match(prompt,/Nunca diga que tudo é permitido/i);
-assert.match(prompt,/não recite um catálogo genérico/i);
+assert.match(prompt,/sem transformar a resposta numa lista genérica/i);
 assert(!prompt.includes("Você deve sempre recusar"));
 console.log("contextual NEXUS chat behavior tests passed");
