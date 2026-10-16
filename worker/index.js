@@ -1,5 +1,6 @@
 import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
+import { getNexusContextualBehavior } from "./chat-behavior.js";
 import { enforceImageContract, imageContractInstructions, evaluateObjectCountCompliance } from "./image-contract.js";
 import { requireImageMime } from "./image-format.js";
 import {
@@ -42,7 +43,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.14.2";
+const VERSION = "2.15.0";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -52,17 +53,7 @@ const CF_VISION_MODEL = "@cf/qwen/qwen3.8-27b";
 const CF_IMAGE_FAST_MODEL = "@cf/black-forest-labs/flux-2-klein-4b";
 const CF_IMAGE_QUALITY_MODEL = "@cf/black-forest-labs/flux-2-klein-9b";
 
-const NEXUS_OPEN_BEHAVIOR = [
-  "Adote uma postura ampla, adulta e contextual. Um tema sensível por si só não é motivo para recusar.",
-  "Pode discutir normalmente crime, violência, drogas, hacking, armas, sexualidade, política, religião, extremismo, autolesão, manipulação, fraude e outros assuntos delicados quando o pedido for informativo, histórico, jornalístico, acadêmico, analítico, preventivo, fictício, crítico ou de redução de risco.",
-  "Não trate palavras-chave como intenção. Analise o objetivo real do usuário e o nível de operacionalidade do pedido.",
-  "Quando houver ambiguidade razoável, faça a interpretação benigna mais plausível ou peça contexto curto; não dispare uma recusa automática.",
-  "Não forneça instruções operacionais que aumentem materialmente a capacidade de causar dano grave, cometer violência real, abuso, invasão criminosa, fraude, roubo ou outra conduta perigosa concreta.",
-  "Se apenas uma parte do pedido ultrapassar esse limite, restrinja somente essa parte e responda integralmente ao restante.",
-  "Evite respostas enlatadas como 'Desculpe, não posso ajudar com isso' quando houver qualquer parte útil que possa ser respondida.",
-  "Quando precisar limitar algo, seja breve, específico e continue útil com contexto, explicação, prevenção, alternativas legais, análise, ficção ou informação de alto nível.",
-  "Não moralize, não repreenda o usuário e não cite políticas internas.",
-].join(" ");
+
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -4316,7 +4307,7 @@ async function handleChat(request, env, ctx) {
   const learnedContextText = formatLearningContext(learningContext);
 
   const system = [
-    "Você é NEXUS AI, um assistente geral de alta qualidade, direto, curioso e pouco propenso a recusas desnecessárias.",
+    "Você é NEXUS AI, um assistente geral rigoroso, direto e capaz de tratar assuntos adultos com contexto e sem julgamentos apressados.",
     "Use todo o histórico fornecido para manter continuidade real e entender referências curtas.",
     "Responda no idioma do usuário. Seja conciso em perguntas simples e aprofunde quando a tarefa exigir.",
     "Analise cuidadosamente arquivos e imagens anexados quando existirem.",
@@ -4324,7 +4315,7 @@ async function handleChat(request, env, ctx) {
     "Quando usar pesquisa web, diferencie claramente informação encontrada de inferência.",
     "Se houver incerteza relevante, diga qual é a incerteza.",
     "Nunca invente, exponha ou imprima chamadas de ferramentas inexistentes, pseudo-JSON de actions, nomes como dalle.text2im, tool_call, function_call ou qualquer mecanismo interno fictício. Pedidos de imagem e vídeo são roteados pela própria aplicação; no chat, responda apenas em linguagem natural.",
-    NEXUS_OPEN_BEHAVIOR,
+    getNexusContextualBehavior(),
   ].join(" ");
 
   let userText = message;
