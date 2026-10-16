@@ -6,6 +6,7 @@ import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,G
 import './styles.css';
 import {readApiJson} from './api-response.js';
 import {fetchChatJson} from './chat-request.js';
+import {reserveComposerHeight,isNearConversationBottom} from './chat-layout.js';
 import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory,selectApprovedChainReferenceKeys} from './image-context.js';
 
 const starterActions=[
@@ -417,7 +418,7 @@ function App(){
     const element=composerWrapRef.current;
     const root=document.documentElement;
     const updateHeight=()=>{
-      const height=element?Math.ceil(element.getBoundingClientRect().height):0;
+      const height=reserveComposerHeight(element?.getBoundingClientRect().height);
       root.style.setProperty('--nexus-composer-height',height+'px');
     };
     updateHeight();
@@ -437,8 +438,7 @@ function App(){
   // Manually scrolling up to read a long reply must never snap back down.
   useEffect(()=>{
     const updateFollow=()=>{
-      const distance=document.documentElement.scrollHeight-(window.scrollY+window.innerHeight);
-      followLatestRef.current=distance<140;
+      followLatestRef.current=isNearConversationBottom(document.documentElement.scrollHeight,window.scrollY,window.innerHeight);
     };
     window.addEventListener('scroll',updateFollow,{passive:true});
     return()=>window.removeEventListener('scroll',updateFollow);
@@ -556,7 +556,7 @@ function App(){
   useEffect(()=>{
     const frame=window.requestAnimationFrame(()=>{
       if(followLatestRef.current){
-        window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+        window.scrollTo({top:document.documentElement.scrollHeight,behavior:'auto'});
       }
     });
     return()=>window.cancelAnimationFrame(frame);
@@ -571,7 +571,7 @@ function App(){
       window.cancelAnimationFrame(frame);
       frame=window.requestAnimationFrame(()=>{
         if(followLatestRef.current){
-          window.scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+          window.scrollTo({top:document.documentElement.scrollHeight,behavior:'auto'});
         }
       });
     });
@@ -1674,6 +1674,7 @@ function App(){
         addMessage(tid,{
           role:'assistant',
           content:data.answer||data.error||'O motor ainda não está configurado.',
+          truncated:Boolean(data.truncated),
           sources:data.sources||[],
           model:data.model||'',
           provider:data.provider||'',
@@ -1876,6 +1877,10 @@ function App(){
                   {m.imageJobStatus!=='errored'&&<button onClick={()=>resumePendingImageJob(thread.id,m)}>Verificar agora</button>}
                 </div>}
                 {m.model&&<div className="model-tag">{m.promptExpanded?'✨ Prompt otimizado · ':''}{m.route?m.route+' · ':''}{m.provider?m.provider+' · ':''}{m.model}{m.imagePipeline?' · '+((m.imagePipeline.startsWith('fast')||m.imagePipeline==='express-edit')?'⚡ ':'')+m.imagePipeline:''}{m.imageJobResumed?' · ↻ retomado':''}{Number.isFinite(m.imageTotalMs)?' · '+(m.imageTotalMs>=1000?(m.imageTotalMs/1000).toFixed(1)+'s':Math.round(m.imageTotalMs)+'ms'):''}{m.imageTask?' · 🖼 '+m.imageTask:''}{m.preservationLevel?' · preservação '+m.preservationLevel:''}{m.rootReferenceUsed?' · 🔒 âncora raiz':''}{m.extraReferencesUsed>0?' · +'+m.extraReferencesUsed+' ref'+(m.extraReferencesUsed>1?'s':''):''}{m.adaptiveRouter?.adaptive?' · 🧠 adaptativo':''}{Number.isFinite(m.adaptiveRouter?.selected?.confidence)?' · confiança '+Math.round(m.adaptiveRouter.selected.confidence*100)+'%':''}{Number.isFinite(m.verificationScore)?' · verificação '+Math.round(m.verificationScore*100)+'%':''}{m.toolCount>0?' · '+m.toolCount+' ferramenta'+(m.toolCount>1?'s':''):''}{m.agentRepaired?' · reparado':''}{Number.isFinite(m.visualScore)?' · visual '+Math.round(m.visualScore*100)+'%':''}{Number.isFinite(m.identityScore)?' · identidade '+Math.round(m.identityScore*100)+'%':''}{Number.isFinite(m.fulfillmentScore)?' · pedido '+Math.round(m.fulfillmentScore*100)+'%':''}{Number.isFinite(m.artifactScore)?' · artefatos '+Math.round(m.artifactScore*100)+'%':''}{Number.isFinite(m.textScore)?' · texto '+Math.round(m.textScore*100)+'%':''}{Number.isFinite(m.exactTextTotal)&&m.exactTextTotal>0?' · texto exato '+(m.exactTextMatches??0)+'/'+m.exactTextTotal:''}{Number.isFinite(m.referenceScore)?' · referência '+Math.round(m.referenceScore*100)+'%':''}{Number.isFinite(m.referenceLeakageRisk)?' · vazamento '+Math.round(m.referenceLeakageRisk*100)+'%':''}{m.qualityGateState==='pass'?' · ✅ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'OK'):m.qualityGateState==='fail'?' · ⚠ gate '+(Number.isFinite(m.qualityGateScore)?Math.round(m.qualityGateScore*100)+'%':'falhou'):''}{m.candidateArenaUsed?' · 🥊 arena visual':''}{m.selectedImageQuality?' · selecionado '+m.selectedImageQuality:''}{m.retryClass?' · retry '+m.retryClass:''}{m.visualRetry>0?' · '+m.visualRetry+' retry visual'+(m.visualRetry>1?'s':''):''}{m.imageWidth>0&&m.imageHeight>0?' · '+m.imageWidth+'×'+m.imageHeight:''}{m.videoPlanned?' · video planner':''}{m.videoQuality==='quality'?' · qualidade máxima':''}{m.videoFallbacks>0?' · '+m.videoFallbacks+' fallback'+(m.videoFallbacks>1?'s':''):''}</div>}
+                {m.truncated&&<div className="truncation-hint" role="status">
+                  <span>A resposta atingiu o limite de geração antes de terminar.</span>
+                  <button type="button" onClick={()=>setInput('Continue a resposta anterior do ponto onde parou, sem repetir o que já foi escrito.')}>Preparar continuação</button>
+                </div>}
                 {m.role==='assistant'&&<div className="feedback-row">
                   <button
                     className={m.feedback==='positive'?'active':''}
