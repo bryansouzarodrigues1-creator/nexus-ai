@@ -1,5 +1,7 @@
 import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
+import { enforceImageContract, imageContractInstructions } from "./image-contract.js";
+import { requireImageMime } from "./image-format.js";
 import {
   getChatProviderStatus,
   availableChatProviders,
@@ -40,7 +42,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.13.0";
+const VERSION = "2.14.0";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -1710,7 +1712,10 @@ async function runTextChat(messages, env, options = {}) {
     if (primary !== CF_GENERAL_MODEL) fallbacks.push(CF_GENERAL_MODEL);
     if (primary !== CF_CODE_MODEL && !fallbacks.includes(CF_CODE_MODEL)) fallbacks.push(CF_CODE_MODEL);
 
-    for (const model of (options.interactive ? [primary, ...fallbacks].slice(0, 2) : [primary, ...fallbacks])) {
+    const allowedModels = options.interactive
+      ? [primary, ...fallbacks].slice(0, 2)
+      : [primary, ...fallbacks].slice(0, Math.max(1, Math.min(3, Number(options.maxAttempts) || 3)));
+    for (const model of allowedModels) {
       const attemptStartedAt = Date.now();
       const attempt = await runCloudflareChat(model, messages, env, {
         ...options,
@@ -2089,6 +2094,8 @@ async function buildReferenceIntelligence({
           ? sessionId + "-reference-intelligence"
           : "",
         cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
       }
     );
 
@@ -2362,6 +2369,8 @@ async function classifyImageTask({
       topP: 0.78,
       sessionId: sessionId ? sessionId + "-image-router" : "",
       cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
     }
   );
 
@@ -2508,6 +2517,8 @@ async function buildVisualContextV2({
       topP: 0.75,
       sessionId: sessionId ? sessionId + "-visual-context" : "",
       cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
     }
   );
 
@@ -2632,6 +2643,8 @@ async function buildVisualEditSpec({
       topP: 0.76,
       sessionId: sessionId ? sessionId + "-edit-spec-v2" : "",
       cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
     }
   );
 
@@ -2993,6 +3006,8 @@ async function verifyVisualEdit({
         topP: 0.7,
         sessionId: sessionId ? sessionId + "-visual-verify-v2" : "",
         cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
       }
     );
   }
@@ -3048,6 +3063,8 @@ async function verifyVisualEdit({
         topP: 0.74,
         sessionId: sessionId ? sessionId + "-visual-verify-text-fallback" : "",
         cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
       }
     );
   }
@@ -3286,6 +3303,8 @@ async function verifySupplementaryReferenceCompliance({
         ? sessionId + "-reference-compliance"
         : "",
       cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
     }
   );
 
@@ -3430,6 +3449,8 @@ async function verifyGeneratedImageV2({
         topP: 0.7,
         sessionId: sessionId ? sessionId + "-generation-verify-v2" : "",
         cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
       }
     );
   }
@@ -3460,6 +3481,8 @@ async function verifyGeneratedImageV2({
         topP: 0.74,
         sessionId: sessionId ? sessionId + "-generation-verify-text" : "",
         cloudflareOnly: true,
+        maxAttempts: 1,
+        timeoutMs: 7500,
       }
     );
   }
@@ -3667,10 +3690,9 @@ async function runCloudflareImage({
     throw new Error("Workers AI não retornou uma imagem válida.");
   }
 
-  return {
-    bytes: base64ToBytes(base64),
-    model,
-  };
+  const bytes = base64ToBytes(base64);
+  const mimeType = requireImageMime(bytes);
+  return { bytes, model, mimeType };
 }
 
 
@@ -4692,8 +4714,9 @@ async function handleImage(request, env) {
     .trim()
     .slice(0, 6000);
   const sessionId = String(body.sessionId || "").slice(0, 128);
+  const precisionMax = body.quality === "precise";
   const requestedQuality =
-    body.quality === "quality" ? "quality" : "fast";
+    body.quality === "quality" || precisionMax ? "quality" : "fast";
   const sourceWidth = Number(body.sourceWidth || 0);
   const sourceHeight = Number(body.sourceHeight || 0);
   const startedAt = Date.now();
@@ -4745,7 +4768,7 @@ async function handleImage(request, env) {
     hasRootReference ||
     extraReferencesUsed > 0;
 
-  const taskPlan =
+  const inferredTaskPlan =
     needsSemanticTaskRouter &&
     cloudflareImageAvailable
       ? await classifyImageTask({
@@ -4759,6 +4782,8 @@ async function handleImage(request, env) {
           env,
         })
       : localTaskPlan;
+  // Never trust creative model output over fixed details explicitly typed by the user.
+  const taskPlan = enforceImageContract(inferredTaskPlan, prompt);
 
   const expressImageEdit =
     shouldUseExpressImageEdit({
@@ -4963,11 +4988,15 @@ async function handleImage(request, env) {
         taskPlan,
         imageExperienceContext
       );
+  const protectedPrompt = [
+    basePromptForModel,
+    imageContractInstructions(taskPlan, prompt),
+  ].join("\n\n");
 
   const continuityPrompt =
     sourceImage && hasRootReference
       ? [
-          basePromptForModel,
+          protectedPrompt,
           "MULTI-REFERENCE CONTINUITY:",
           "Image 0 is the CURRENT working image and must receive the requested edit.",
           "Image 1 is the ROOT/ORIGINAL continuity anchor.",
@@ -4975,7 +5004,7 @@ async function handleImage(request, env) {
           "Do not revert intentional edits already present in image 0 unless the user explicitly asks to undo them.",
           "Use image 1 to prevent cumulative identity/style drift, not to overwrite requested changes.",
         ].join(" ")
-      : basePromptForModel;
+      : protectedPrompt;
 
   const promptForModel =
     sourceImage && extraReferencesUsed > 0
@@ -5088,7 +5117,7 @@ async function handleImage(request, env) {
         let retryCount = 0;
         const generatedBlob = new Blob(
           [generated.bytes],
-          { type: "image/jpeg" }
+          { type: generated.mimeType || requireImageMime(generated.bytes) }
         );
 
         const verifyThisCandidate =
@@ -5196,12 +5225,14 @@ async function handleImage(request, env) {
             : verification?.verified
               ? (
                   imageQuality === "quality"
-                    ? (
-                        taskPlan?.requiresIdentityLock ||
-                        taskPlan?.requiresTextAccuracy
-                          ? 2
-                          : 1
-                      )
+                    ? (precisionMax
+                        ? 3
+                        : (
+                            taskPlan?.requiresIdentityLock ||
+                            taskPlan?.requiresTextAccuracy
+                              ? 2
+                              : 1
+                          ))
                     : (
                         shouldRetryFastImage(
                           verification,
@@ -5332,7 +5363,7 @@ async function handleImage(request, env) {
 
           const retryBlob = new Blob(
             [retried.bytes],
-            { type: "image/jpeg" }
+            { type: retried.mimeType || requireImageMime(retried.bytes) }
           );
 
           let retryVerification = sourceImage
@@ -5705,12 +5736,13 @@ async function handleImage(request, env) {
           best.generated.bytes,
           {
             headers: {
-              "Content-Type": "image/jpeg",
+              "Content-Type": best.generated.mimeType || requireImageMime(best.generated.bytes),
               "Cache-Control": "no-store",
               "X-Nexus-Image-Mode": finalMode,
               "X-Nexus-Image-Task": finalMode,
               "X-Nexus-Image-Pipeline":
                 imagePipelineProfile,
+              "X-Nexus-Precision-Max": precisionMax ? "1" : "0",
               "X-Nexus-Image-Total-Ms":
                 String(Date.now() - startedAt),
               "X-Nexus-Image-Case-Id":
