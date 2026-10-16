@@ -70,7 +70,9 @@ export function shouldVerifyFastImageCandidate({
   if (requiresTextAccuracy) return true;
   if (Number(manualExtraReferencesUsed || 0) > 0) return true;
   if (!hasSourceImage) return false;
-  if (expressEdit) return false;
+  // Even an express edit must be checked against the requested change.
+  // Otherwise an unchanged image can be delivered as a successful edit.
+  if (expressEdit) return true;
 
   return [
     "identity_lock",
