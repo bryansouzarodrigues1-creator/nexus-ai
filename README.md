@@ -946,3 +946,11 @@ Modelos padrão: Groq `openai/gpt-oss-20b` (rápido) ou `openai/gpt-oss-120b`; G
 - Os blocos de Markdown, listas, cabeçalhos e tabelas respeitam a largura do celular. Blocos de código continuam com rolagem horizontal própria, sem ampliar a página.
 - Ao abrir uma conversa ou receber uma nova mensagem, a lista rola até a última mensagem. Alterações de feedback e de metadados não deslocam o usuário para o fim.
 - Quando há referências/imagens anexadas e o editor fica maior que a área disponível, ele ganha sua própria rolagem. Não modifica os recursos de IA nem o fluxo de imagens.
+
+## Estilo de conversa — NEXUS v2.15
+
+O chat adota instruções globais mais **diretas e contextuais**: não presume intenção maliciosa por palavras isoladas, aceita pedidos legítimos sobre assuntos delicados (análise histórica, crítica, acadêmica, criativa e preventiva), evita listas de regras e recusas genéricas e atende às partes úteis de solicitações mistas. Questionamentos sobre limites e privacidade devem receber respostas específicas e verdadeiras; o serviço usa histórico/memória e pode enviar conteúdo a provedores externos.
+
+**Não é um desbloqueio de modelos nem uma garantia de resposta a qualquer solicitação.** Groq, Workers AI, Hugging Face e demais provedores têm suas próprias políticas e filtros. A aplicação não tenta contornar recusas impostas por eles. Pedidos operacionais de dano concreto continuam sujeitos a limites, mas não devem impedir discussões informativas ou fictícias legítimas.
+
+Cobertura automática: `worker/chat-behavior.test.js` valida os princípios de abordagem e o `npm run check` continua verificando os fluxos anteriores. A melhoria de taxa de recusas indevidas ainda exige testes manuais com os mesmos prompts em produção.
