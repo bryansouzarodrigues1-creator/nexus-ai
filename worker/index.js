@@ -1,5 +1,12 @@
 import { InferenceClient } from "@huggingface/inference";
 import { withDeadline } from "./chat-timeout.js";
+import {
+  getChatProviderStatus,
+  availableChatProviders,
+  callExternalChat,
+  isProviderCoolingDown,
+  noteProviderResult,
+} from "./chat-providers.js";
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import {
   classifyAdaptiveFailure,
@@ -33,7 +40,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.12.1";
+const VERSION = "2.13.0";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -966,6 +973,7 @@ async function handleStatus(env) {
   return json({
     ok: true,
     version: VERSION,
+    chatProviders: getChatProviderStatus(env),
     focusMode: "core-text-image-files-learning",
     behaviorMode: "open-contextual",
     architecture: {
@@ -1628,7 +1636,70 @@ async function runCloudflareChat(model, messages, env, options = {}) {
   }
 }
 
+// Keep interactive requests inside a fixed wall-clock budget.
+// Every provider below requires an operator-owned key, except Workers AI.
+async function runInteractiveTextChat(messages, env, options = {}) {
+  const began = Date.now();
+  const budget = Math.max(1200, Math.min(26000, Number(options.budgetMs) || 23000));
+  const configured = availableChatProviders(env, {
+    vision: Boolean(options.vision),
+    quickReply: Boolean(options.quickReply),
+  });
+  const candidateByName = new Map(configured.map(item => [item.name, item]));
+  const priority = options.vision
+    ? ["gemini", "cloudflare", "openrouter", "huggingface"]
+    : ["groq", "gemini", "cloudflare", "openrouter", "huggingface"];
+  const attempts = [];
+
+  for (const name of priority) {
+    const remaining = budget - (Date.now() - began);
+    if (remaining < 600 || isProviderCoolingDown(name)) continue;
+    const timeoutMs = Math.min(
+      remaining - 100,
+      name === "cloudflare" ? 6500 : name === "huggingface" ? 4000 : 6200
+    );
+    if (timeoutMs < 400) continue;
+
+    let attempt = null;
+    if (name === "cloudflare" && env.AI) {
+      attempt = await runCloudflareChat(
+        options.cloudflareModel || CF_GENERAL_MODEL,
+        messages, env,
+        { ...options, timeoutMs }
+      );
+    } else if (name === "huggingface" && env.HF_TOKEN) {
+      attempt = await runHfChat(
+        options.hfModel || env.HF_CHAT_MODEL || "openai/gpt-oss-20b:fastest",
+        messages, env, { ...options, timeoutMs }
+      );
+    } else if (candidateByName.has(name)) {
+      attempt = await callExternalChat(
+        candidateByName.get(name), messages, { ...options, timeoutMs }
+      );
+    }
+    if (!attempt) continue;
+    noteProviderResult(name, attempt);
+    if (attempt.ok) return attempt;
+    attempts.push(attempt);
+  }
+
+  // Report a short, actionable failure without exposing secrets, prompts,
+  // full upstream payloads, or claiming the configured accounts are funded.
+  return {
+    ok: false,
+    status: 503,
+    raw: attempts.length
+      ? "Provedores tentados: " + attempts.map(item =>
+          item.provider + " (HTTP " + item.status + ")"
+        ).join(", ") + ". Confira as cotas e chaves dos provedores."
+      : "Nenhum provedor de chat ativo. Configure GROQ_API_KEY, GEMINI_API_KEY ou OPENROUTER_API_KEY no Cloudflare.",
+    model: "",
+    provider: "multi-provider",
+  };
+}
+
 async function runTextChat(messages, env, options = {}) {
+  if (options.interactive) return runInteractiveTextChat(messages, env, options);
   let lastAttempt = null;
   let cloudflareFailure = null;
 
@@ -4167,7 +4238,7 @@ async function handleChat(request, env, ctx) {
   }
 
   if (!message) return json({ error: "Mensagem vazia." }, 400);
-  if (!env.AI && !env.HF_TOKEN)
+  if (!Object.values(getChatProviderStatus(env)).some(Boolean))
     return json({ error: "Nenhum provedor de IA está configurado." }, 503);
 
   if (sessionId) {
@@ -4299,7 +4370,8 @@ async function handleChat(request, env, ctx) {
       topP: 0.9,
       sessionId,
       learningKind,
-      cloudflareOnly: Boolean(env.AI),
+      interactive: true,
+      vision: true,
     });
 
     if (!attempt?.ok && env.AI) {
@@ -4343,7 +4415,7 @@ async function handleChat(request, env, ctx) {
       } catch {}
     }
 
-    if (!attempt?.ok && env.HF_TOKEN) {
+    if (!attempt?.ok && env.HF_TOKEN && !isProviderCoolingDown("huggingface")) {
       attempt = await runHfChat(
         env.HF_VISION_MODEL || "Qwen/Qwen2.5-VL-3B-Instruct",
         visionMessages,
