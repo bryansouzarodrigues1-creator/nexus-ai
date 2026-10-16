@@ -1,11 +1,11 @@
 {
   "name": "nexus-ai",
   "private": true,
-  "version": "2.14.2",
+  "version": "2.15.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js && node src/image-context.test.js && node --check worker/image-task-core.js && node worker/image-task-core.test.js && node worker/image-routing-policy.test.js && node worker/image-reference-policy.test.js && node worker/image-quality-gate.test.js && node worker/lesson-relevance.test.js && node src/api-response.test.js && node worker/chat-timeout.test.js && node src/chat-request.test.js && node worker/chat-providers.test.js && node worker/image-contract.test.js && node worker/image-format.test.js && node src/chat-layout.test.js",
+    "check": "node --check worker/index.js && node --check worker/conversation-state.js && node --check worker/agent-workflow.js && node --check worker/adaptive-router.js && node --check worker/image-case-ranking.js && node worker/adaptive-router.test.js && node worker/image-case-ranking.test.js && node src/image-context.test.js && node --check worker/image-task-core.js && node worker/image-task-core.test.js && node worker/image-routing-policy.test.js && node worker/image-reference-policy.test.js && node worker/image-quality-gate.test.js && node worker/lesson-relevance.test.js && node src/api-response.test.js && node worker/chat-timeout.test.js && node src/chat-request.test.js && node worker/chat-providers.test.js && node worker/image-contract.test.js && node worker/image-format.test.js && node src/chat-layout.test.js && node worker/chat-behavior.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },
