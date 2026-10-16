@@ -42,7 +42,7 @@ export { NexusAgentWorkflow } from "./agent-workflow.js";
 
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const VERSION = "2.14.0";
+const VERSION = "2.14.1";
 const CF_FAST_CHAT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
 const CF_GENERAL_MODEL = "@cf/google/gemma-4-26b-a4b-it";
@@ -4533,7 +4533,7 @@ async function handleChat(request, env, ctx) {
       cloudflareModel: quickReply ? CF_FAST_CHAT_MODEL : route.model,
       interactive: true,
       quickReply,
-      maxTokens: quickReply ? 384 : route.maxTokens,
+      maxTokens: quickReply ? 1150 : Math.max(1200, route.maxTokens),
       temperature: route.key === "deep" ? 0.45 : 0.68,
       topP: 0.94,
       reasoningEffort: route.reasoningEffort,
@@ -4568,6 +4568,7 @@ async function handleChat(request, env, ctx) {
   }
 
   const answer = extractModelText(data) || "O modelo respondeu sem texto.";
+  const generationTruncated = ["length","max_tokens"].includes(String(data?.choices?.[0]?.finish_reason || data?.finish_reason || ""));
 
   const nativeSources = extractSources(data);
   const fallbackSources = fallbackSearch.results.map((r) => ({
@@ -4616,6 +4617,7 @@ async function handleChat(request, env, ctx) {
 
   return json({
     answer,
+    truncated: generationTruncated,
     model: attempt.model,
     provider: attempt.provider,
     route: route.key,
