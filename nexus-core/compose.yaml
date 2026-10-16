@@ -1,0 +1,33 @@
+# NEXUS Core 0.1 - isolated inference only. This file is not referenced by Wrangler.
+# No public port. Do not run on a public VM without an authenticated HTTPS gateway.
+services:
+  core:
+    profiles: ["inference"]
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: "no"
+    init: true
+    command:
+      - "--hf-repo"
+      - "Qwen/Qwen3-0.6B-GGUF:Q8_0"
+      - "--alias"
+      - "nexus-core-0.1"
+      - "--ctx-size"
+      - "2048"
+      - "--threads"
+      - "2"
+      - "--parallel"
+      - "1"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--no-webui"
+    environment:
+      LLAMA_API_KEY: ${NEXUS_CORE_API_KEY:?Set NEXUS_CORE_API_KEY in nexus-core/.env}
+    ports:
+      - "127.0.0.1:${NEXUS_CORE_PORT:-18080}:8080"
+    volumes:
+      - core-model-cache:/root/.cache/llama.cpp
+    mem_limit: 4g
+volumes:
+  core-model-cache:
