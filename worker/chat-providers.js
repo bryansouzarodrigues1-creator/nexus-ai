@@ -129,7 +129,7 @@ export async function callExternalChat(candidate, messages, options = {}, fetche
       status: 200,
       // Preserve the exact response schema consumed by the existing chat UI.
       raw: JSON.stringify({
-        choices: [{ message: { role: "assistant", content: answer } }],
+        choices: [{ message: { role: "assistant", content: answer }, finish_reason: data?.choices?.[0]?.finish_reason || null }],
         usage: data?.usage || null,
         citations: data?.citations || [],
       }),
