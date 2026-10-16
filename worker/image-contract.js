@@ -75,3 +75,32 @@ export function imageContractInstructions(plan, userPrompt) {
     "Original request has priority over paraphrases, task plans, past examples, aesthetics and generic design conventions.",
   ].filter(Boolean).join("\n");
 }
+
+export function evaluateObjectCountCompliance(required = [], observed = []) {
+  const expected = Array.isArray(required) ? required.slice(0, 8) : [];
+  if (!expected.length) return { applicable: false, verified: false, pass: true, mismatches: [] };
+  const normalize = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const entries = Array.isArray(observed) ? observed.slice(0, 15) : [];
+  const mismatches = [];
+  let matched = 0;
+  for (const item of expected) {
+    // The verifier must cite the requested object by name; missing observations
+    // are unknown, not evidence that the quantity was correct.
+    const itemKey = normalize(item.subject);
+    const found = entries.find(entry => normalize(entry?.subject) === itemKey);
+    const actual = Number(found?.count);
+    if (!found || !Number.isInteger(actual) || actual < 0) continue;
+    matched++;
+    if (actual !== item.count) mismatches.push({
+      subject: item.subject,
+      expected: item.count,
+      observed: actual,
+    });
+  }
+  return {
+    applicable: true,
+    verified: matched === expected.length,
+    pass: matched === expected.length && mismatches.length === 0,
+    mismatches,
+  };
+}
