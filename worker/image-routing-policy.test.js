@@ -99,7 +99,7 @@ assert.equal(
     taskMode: "strict_edit",
     expressEdit: true,
   }),
-  false
+  true
 );
 
 assert.equal(
