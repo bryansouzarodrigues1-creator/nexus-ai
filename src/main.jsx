@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import {Search,Plus,Paperclip,Image,Video,FileText,Send,Settings,MessageSquare,Globe2,Sparkles,Menu,X,ThumbsUp,ThumbsDown,Code2,LockKeyhole,BrainCircuit,RefreshCw,Activity} from 'lucide-react';
 import './styles.css';
 import {readApiJson} from './api-response.js';
+import {fetchChatJson} from './chat-request.js';
 import {wantsFreshImage,shouldContinueImageContext,selectImageChainHistory,selectApprovedChainReferenceKeys} from './image-context.js';
 
 const starterActions=[
@@ -1553,7 +1554,7 @@ function App(){
               ?{kind:'text',name:activeAttachment.name,text:activeAttachment.text,mime:activeAttachment.mime}
               :null;
 
-        const res=await fetch('/api/chat',{
+        const {res,data:chatData}=await fetchChatJson('/api/chat',{
           method:'POST',
           headers:apiHeaders(),
           body:JSON.stringify({
@@ -1566,7 +1567,7 @@ function App(){
           })
         });
 
-        let data=await readApiJson(res,'enviar mensagem de texto');
+        let data=chatData;
         if(!res.ok){
           throw new Error([data.error,data.provider_error].filter(Boolean).join(' — ')||'O chat está indisponível (HTTP '+res.status+').');
         }
@@ -1643,7 +1644,7 @@ function App(){
     <aside className={menu?'sidebar open':'sidebar'}>
       <div className="brand">
         <div className="orb">N</div>
-        <div><strong>NEXUS AI</strong><span>v2.12</span></div>
+        <div><strong>NEXUS AI</strong><span>v2.12.1</span></div>
         <button className="mobile-x" onClick={()=>setMenu(false)}><X size={18}/></button>
       </div>
       <button className="new" onClick={newChat}><Plus size={17}/> Nova conversa</button>
