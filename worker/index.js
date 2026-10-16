@@ -5560,7 +5560,7 @@ async function handleImage(request, env) {
             (
               best.verification?.verified &&
               Number.isFinite(Number(best.verification.requestFulfillment)) &&
-              Number(best.verification.requestFulfillment) < 0.30
+              Number(best.verification.requestFulfillment) < 0.58
             )
           )
         ) {
